@@ -33,6 +33,25 @@ else()
 endif()
 
 # ------------------------------------------------------------------------------
+# Core header-only library with shared helpers
+# ------------------------------------------------------------------------------
+add_library(nbbo_core INTERFACE)
+
+target_include_directories(nbbo_core
+  INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_link_libraries(nbbo_core
+  INTERFACE
+    ${ARROW_TGT}
+    ${PARQUET_TGT}
+)
+
+target_compile_features(nbbo_core INTERFACE cxx_std_23)
+
+
+# ------------------------------------------------------------------------------
 # nbbo_pipeline (existing main, if present)
 # ------------------------------------------------------------------------------
 if (EXISTS "${CMAKE_SOURCE_DIR}/src/nbbo_pipeline.cpp")
@@ -44,8 +63,7 @@ endif()
 target_link_libraries(
   nbbo_pipeline
   PRIVATE
-    ${ARROW_TGT}
-    ${PARQUET_TGT}
+    nbbo_core
     ZLIB::ZLIB
     Threads::Threads
 )
@@ -58,13 +76,24 @@ add_executable(clean_mid_spikes src/clean_mid_spikes.cpp)
 target_link_libraries(
   clean_mid_spikes
   PRIVATE
-    ${ARROW_TGT}
-    ${PARQUET_TGT}
+    nbbo_core
     ZLIB::ZLIB
     Threads::Threads
 )
 target_compile_features(clean_mid_spikes PRIVATE cxx_std_23)
 target_compile_options(clean_mid_spikes PRIVATE -O3 -pipe -fvisibility=hidden)
+
+# # build_events
+# add_executable(build_events src/build_events.cpp)
+# target_link_libraries(
+#   build_events
+#   PRIVATE
+#     nbbo_core
+#     ZLIB::ZLIB
+#     Threads::Threads
+# )
+# target_compile_features(build_events PRIVATE cxx_std_23)
+# target_compile_options(build_events PRIVATE -O3 -pipe -fvisibility=hidden)
 
 # ------------------------------------------------------------------------------
 # IPO/LTO when available

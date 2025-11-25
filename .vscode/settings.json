@@ -1,0 +1,25 @@
+{
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "editor.formatOnSave": false,
+
+  // C++ settings
+  "cmake.sourceDirectory": "${workspaceFolder}/nbbo_pipeline",
+  "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+  "C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json",
+  "C_Cpp.clang_format_path": "/usr/bin/clang-format-15",
+  "C_Cpp.formatting": "clangFormat",
+  "C_Cpp.clang_format_style": "file",
+  "[cpp]": { "editor.defaultFormatter": "xaver.clang-format" },
+  "[cmake]": { "editor.defaultFormatter": "cheshirekow.cmake-format" },
+
+  // markdown
+  "[markdown]": {
+    "editor.codeActionsOnSave": { "source.fixAll.markdownlint": "explicit" }
+  },
+
+  // exclude files from being linted/formatted
+  "files.exclude": { "**/.git": true },
+
+  // exclude files/directories from being searched
+  "search.exclude": { "**/.git": true }
+}
