@@ -39,13 +39,13 @@
 #include <vector>
 #include <cctype>
 #include <queue>
+#include <stdexcept>
+#include "nbbo/arrow_utils.hpp"
+#include "nbbo/time_utils.hpp"
+#include "nbbo/schema.hpp"
 
 using std::string; using std::string_view;
 namespace fs = std::filesystem;
-
-static inline void ARROW_OK(const arrow::Status& st) {
-    if (!st.ok()) throw std::runtime_error(st.ToString());
-}
 
 /************** Settings *************************/
 struct Settings {
@@ -101,28 +101,6 @@ struct Row {
     uint64_t ts;
     float mid, logret, bidSize, askSize, spread, bid, ask;
 };
-
-inline uint32_t ymd(uint64_t ts){ return (uint32_t)(ts/1000000000ULL); }
-static inline int hh(uint64_t ts){ return (int)((ts/10000000ULL)%100ULL); }
-static inline int mm(uint64_t ts){ return (int)((ts/100000ULL)%100ULL); }
-static inline int ss(uint64_t ts){ return (int)((ts/1000ULL)%100ULL); }
-static inline int mmm(uint64_t ts){ return (int)(ts%1000ULL); }
-static inline bool same_day(uint64_t a,uint64_t b){ return ymd(a)==ymd(b); }
-static inline int ms_since_midnight(uint64_t ts){
-    return ((hh(ts)*60+mm(ts))*60+ss(ts))*1000+mmm(ts);
-}
-static inline uint64_t inc_ms(uint64_t ts){
-    int H=hh(ts), M=mm(ts), S=ss(ts), MS=mmm(ts);
-    int Y=(int)(ts/1000000000000ULL);
-    int Mon=(int)((ts/10000000000ULL)%100ULL);
-    int D=(int)((ts/100000000ULL)%100ULL);
-    if(++MS==1000){ MS=0; if(++S==60){ S=0; if(++M==60){ M=0; ++H; } } }
-    return (uint64_t)Y*1000000000000ULL + (uint64_t)Mon*10000000000ULL + (uint64_t)D*100000000ULL
-         + (uint64_t)H*10000000ULL + (uint64_t)M*100000ULL + (uint64_t)S*1000ULL + (uint64_t)MS;
-}
-static inline int year_from_ts(uint64_t ts){
-    return (int)(ts / 10000000000000ULL); 
-}
 
 /************** Glitches *************/
 struct GlitchCounts {
@@ -335,15 +313,15 @@ struct Pipeline {
                 Row r; float new_mid=0.f;
                 bool ok=bucket.out(r, have_prev?prev_mid:0.f, true, new_mid);
                 if(ok){
-                    if(!have_prev || ymd(r.ts)!=prev_date) r.logret = std::numeric_limits<float>::quiet_NaN();
+                    if(!have_prev || nbbo::ymd(r.ts)!=prev_date) r.logret = std::numeric_limits<float>::quiet_NaN();
 
                     if(S.clock_grid && S.ffill && have_prev_row){
-                        if(same_day(last_emit,r.ts)){
-                            int gap = ms_since_midnight(r.ts) - ms_since_midnight(last_emit) - 1;
+                        if(nbbo::same_day(last_emit,r.ts)){
+                            int gap = nbbo::ms_since_midnight(r.ts) - nbbo::ms_since_midnight(last_emit) - 1;
                             if(gap>0 && gap<=S.max_ffill_gap_ms){
                                 uint64_t t=last_emit;
                                 for(int g=0; g<gap; ++g){
-                                    t=inc_ms(t);
+                                    t=nbbo::inc_ms(t);
                                     Row f=prev_row; f.ts=t; f.logret=0.0f;
                                     MsBinRow br{ f.ts,f.mid,f.logret,f.bidSize,f.askSize,f.spread,f.bid,f.ask };
                                     bin.write((char*)&br, sizeof(br));
@@ -365,7 +343,7 @@ struct Pipeline {
                         auto tot = p_out.fetch_add(S.log_every_out, std::memory_order_relaxed) + S.log_every_out;
                         std::cerr << "[stageA] " << csv.filename().string() << " out=" << tot << "\n";
                     }
-                    prev_mid=new_mid; prev_date=ymd(r.ts); have_prev=true;
+                    prev_mid=new_mid; prev_date=nbbo::ymd(r.ts); have_prev=true;
                     last_emit=r.ts; prev_row=r; have_prev_row=true;
                 }
                 bucket.reset(ts);
@@ -377,7 +355,7 @@ struct Pipeline {
             Row r; float new_mid=0.f;
             bool ok=bucket.out(r, have_prev?prev_mid:0.f, true, new_mid);
             if(ok){
-                if(!have_prev || ymd(r.ts)!=prev_date) r.logret = std::numeric_limits<float>::quiet_NaN();
+                if(!have_prev || nbbo::ymd(r.ts)!=prev_date) r.logret = std::numeric_limits<float>::quiet_NaN();
                 MsBinRow br{ r.ts,r.mid,r.logret,r.bidSize,r.askSize,r.spread,r.bid,r.ask };
                 bin.write((char*)&br, sizeof(br));
             }
@@ -498,12 +476,12 @@ struct Pipeline {
             while(in.read((char*)&r, sizeof(r))){
                 ++read;
                 if(have_prev){
-                    if(same_day(last_emit_ts, r.ts)){
-                        int gap = ms_since_midnight(r.ts) - ms_since_midnight(last_emit_ts) - 1;
+                    if(nbbo::same_day(last_emit_ts, r.ts)){
+                        int gap = nbbo::ms_since_midnight(r.ts) - nbbo::ms_since_midnight(last_emit_ts) - 1;
                         if(gap>0 && gap<=S.max_ffill_gap_ms){
                             uint64_t t = last_emit_ts;
                             for(int g=0; g<gap; ++g){
-                                t = inc_ms(t);
+                                t = nbbo::inc_ms(t);
                                 MsBinRow f = prev;
                                 f.ts = t;
                                 f.logret = 0.0f;
@@ -681,7 +659,7 @@ struct Pipeline {
                 asb.Finish().ValueOrDie(), sprb.Finish().ValueOrDie(),
                 bidb.Finish().ValueOrDie(), askb.Finish().ValueOrDie()
             });
-            ARROW_OK(writer->WriteRecordBatch(*batch));
+            nbbo::ARROW_OK(writer->WriteRecordBatch(*batch));
             total_rows += (uint64_t)nrows_batch;
             nrows_batch = 0;
 
@@ -694,8 +672,8 @@ struct Pipeline {
         }
         void close(const std::shared_ptr<arrow::Schema>& schema){
             flush_batch(schema);
-            ARROW_OK(writer->Close());
-            ARROW_OK(out->Close());
+            nbbo::ARROW_OK(writer->Close());
+            nbbo::ARROW_OK(out->Close());
             std::cerr << "[pass-Parquet] year=" << year << " total=" << total_rows << " (closed)\n";
         }
     };
@@ -714,16 +692,7 @@ struct Pipeline {
     void msbins_to_parquet_per_year(const std::vector<fs::path>& msbins, double cut_lo, double cut_hi){
         constexpr int64_t BATCH=2'000'000;
 
-        auto schema = arrow::schema({
-            arrow::field("ts", arrow::uint64()),
-            arrow::field("mid", arrow::float32()),
-            arrow::field("log_return", arrow::float32()),
-            arrow::field("bid_size", arrow::float32()),
-            arrow::field("ask_size", arrow::float32()),
-            arrow::field("spread", arrow::float32()),
-            arrow::field("bid", arrow::float32()),
-            arrow::field("ask", arrow::float32())
-        });
+        auto schema = nbbo::nbbo_schema();
 
         fs::path base = out_root_dir() / out_mode_dirname();
         fs::create_directories(base);
@@ -771,17 +740,17 @@ struct Pipeline {
                     }
                 }
 
-                int yr = year_from_ts(r.ts);
+                int yr = nbbo::year_from_ts(r.ts);
                 YearWriter& yw = get_writer(yr);
 
-                ARROW_OK(yw.tsb.Append(r.ts));
-                ARROW_OK(yw.midb.Append(r.mid));
-                if(std::isfinite(r.logret)) ARROW_OK(yw.lrb.Append(r.logret)); else ARROW_OK(yw.lrb.AppendNull());
-                ARROW_OK(yw.bsb.Append(r.bidSize));
-                ARROW_OK(yw.asb.Append(r.askSize));
-                ARROW_OK(yw.sprb.Append(r.spread));
-                ARROW_OK(yw.bidb.Append(r.bid));
-                ARROW_OK(yw.askb.Append(r.ask));
+                nbbo::ARROW_OK(yw.tsb.Append(r.ts));
+                nbbo::ARROW_OK(yw.midb.Append(r.mid));
+                if(std::isfinite(r.logret)) nbbo::ARROW_OK(yw.lrb.Append(r.logret)); else nbbo::ARROW_OK(yw.lrb.AppendNull());
+                nbbo::ARROW_OK(yw.bsb.Append(r.bidSize));
+                nbbo::ARROW_OK(yw.asb.Append(r.askSize));
+                nbbo::ARROW_OK(yw.sprb.Append(r.spread));
+                nbbo::ARROW_OK(yw.bidb.Append(r.bid));
+                nbbo::ARROW_OK(yw.askb.Append(r.ask));
 
                 if(++yw.nrows_batch>=BATCH){
                     yw.flush_batch(schema);
@@ -831,7 +800,7 @@ struct Pipeline {
             std::vector<fs::path> ms_event_bins;
             bool have_event_cache = msbins_from_subdir(S.cache_dir / "ms_event", ms_event_bins);
             if(have_event_cache){
-                std::cerr << "▶ [ffill-from-event] ms_clock cache missing; synthesizing from ms_event (" 
+                std::cerr << "▶ [ffill-from-event] ms_clock cache missing; synthesizing from ms_event ("
                           << ms_event_bins.size() << " files) with gap<=" << S.max_ffill_gap_ms << "ms...\n";
                 std::vector<fs::path> produced_clock;
                 event_to_clock_ffill_parallel(ms_event_bins, produced_clock);
@@ -918,5 +887,3 @@ int main(int argc,char** argv){
     }
     return 0;
 }
-
-

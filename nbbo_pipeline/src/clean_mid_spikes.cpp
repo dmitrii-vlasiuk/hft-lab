@@ -16,23 +16,11 @@
 #include <iostream>
 #include <filesystem>
 #include <algorithm>
+#include "nbbo/arrow_utils.hpp"
+#include "nbbo/time_utils.hpp"
 
 using arrow::Status;
 using arrow::Result;
-
-static inline uint32_t day_from_ts(uint64_t ts) {
-    // ts like yyyymmddHHMMSSmmm... -> day key yyyymmdd
-    return static_cast<uint32_t>(ts / 1000000000ULL);
-}
-
-static inline std::string day_to_string(uint32_t d) {
-    uint32_t y = d / 10000U;
-    uint32_t m = (d / 100U) % 100U;
-    uint32_t dd = d % 100U;
-    char buf[16];
-    std::snprintf(buf, sizeof(buf), "%04u-%02u-%02u", y, m, dd);
-    return std::string(buf);
-}
 
 static void usage_and_exit(const char* argv0) {
     std::fprintf(stderr,
@@ -52,29 +40,6 @@ Example:
 )",
     argv0, argv0);
     std::exit(2);
-}
-
-template <typename T>
-static T ValueAt(const std::shared_ptr<arrow::Array>& arr, int64_t i);
-
-template <>
-uint64_t ValueAt<uint64_t>(const std::shared_ptr<arrow::Array>& arr, int64_t i) {
-    switch (arr->type_id()) {
-        case arrow::Type::UINT64: return static_cast<const arrow::UInt64Array&>(*arr).Value(i);
-        case arrow::Type::INT64:  return static_cast<uint64_t>(static_cast<const arrow::Int64Array&>(*arr).Value(i));
-        default:
-            throw std::runtime_error("Unsupported ts type: " + arr->type()->ToString());
-    }
-}
-
-template <>
-double ValueAt<double>(const std::shared_ptr<arrow::Array>& arr, int64_t i) {
-    switch (arr->type_id()) {
-        case arrow::Type::FLOAT:  return static_cast<double>(static_cast<const arrow::FloatArray&>(*arr).Value(i));
-        case arrow::Type::DOUBLE: return static_cast<const arrow::DoubleArray&>(*arr).Value(i);
-        default:
-            throw std::runtime_error("Unsupported mid type: " + arr->type()->ToString());
-    }
 }
 
 struct SpikeExample {
@@ -109,24 +74,10 @@ int main(int argc, char** argv) {
     } catch (...) {}
 
     // Input
-    Result<std::shared_ptr<arrow::io::RandomAccessFile>> rf_res = arrow::io::ReadableFile::Open(in_path);
-    if (!rf_res.ok()) { std::cerr << "open input failed: " << rf_res.status().ToString() << "\n"; return 1; }
-    auto infile = *rf_res;
-
-    auto fr_res = parquet::arrow::OpenFile(infile, arrow::default_memory_pool());
-    if (!fr_res.ok()) { std::cerr << "open parquet reader failed: " << fr_res.status().ToString() << "\n"; return 1; }
-    std::unique_ptr<parquet::arrow::FileReader> reader = std::move(fr_res).ValueOrDie();
-
     std::shared_ptr<arrow::Schema> schema;
-    Status st = reader->GetSchema(&schema);
-    if (!st.ok()) { std::cerr << "get schema failed: " << st.ToString() << "\n"; return 1; }
+    auto reader = nbbo::open_parquet_reader(in_path, schema);
+    Status st;
 
-    auto ts_f  = schema->GetFieldByName("ts");
-    auto mid_f = schema->GetFieldByName("mid");
-    if (!ts_f || !mid_f) {
-        std::cerr << "missing columns 'ts' and/or 'mid' in schema: " << schema->ToString() << "\n";
-        return 1;
-    }
 
     // Output
     auto of_res = arrow::io::FileOutputStream::Open(out_path);
@@ -152,8 +103,13 @@ int main(int argc, char** argv) {
     for (int i = 0; i < schema->num_fields(); ++i) all_cols[i] = i;
 
     std::shared_ptr<arrow::RecordBatchReader> rb_reader;
-    st = reader->GetRecordBatchReader(all_row_groups, all_cols, &rb_reader);
-    if (!st.ok()) { std::cerr << "GetRecordBatchReader failed: " << st.ToString() << "\n"; return 1; }
+    auto rb_res = reader->GetRecordBatchReader(all_row_groups, all_cols);
+    if (!rb_res.ok()) {
+        std::cerr << "GetRecordBatchReader failed: "
+                << rb_res.status().ToString() << "\n";
+        return 1;
+    }
+    rb_reader = std::move(rb_res).ValueOrDie();
 
     uint64_t total_rows_in = 0, total_rows_out = 0, total_removed = 0;
     uint64_t removed_by_delta = 0, removed_by_level = 0;
@@ -180,7 +136,12 @@ int main(int argc, char** argv) {
         if (!ts_arr || !mid_arr) { std::cerr << "batch missing 'ts' or 'mid'\n"; return 1; }
 
         arrow::BooleanBuilder keep_builder;
-        keep_builder.Reserve(n);
+        auto rs = keep_builder.Reserve(n);
+        if (!rs.ok()) {
+            std::cerr << "BooleanBuilder::Reserve failed: "
+                    << rs.ToString() << "\n";
+            return 1;
+        }
 
         for (int64_t i = 0; i < n; ++i) {
             // null handling: drop null ts or null mid
@@ -189,10 +150,10 @@ int main(int argc, char** argv) {
                 continue;
             }
 
-            uint64_t ts = ValueAt<uint64_t>(ts_arr, i);
-            double mid  = ValueAt<double>(mid_arr, i);
+            uint64_t ts = nbbo::ValueAt<uint64_t>(ts_arr, i);
+            double mid  = nbbo::ValueAt<double>(mid_arr, i);
 
-            uint32_t day = day_from_ts(ts);
+            uint32_t day = nbbo::day_from_ts(ts);
             bool keep = true;
             bool big_delta = false;
             bool big_level = (mid > MID_MAX);
@@ -304,7 +265,7 @@ int main(int argc, char** argv) {
         uint64_t kept = kept_per_day.count(d) ? kept_per_day[d] : 0;
         uint64_t removed = removed_per_day.count(d) ? removed_per_day[d] : 0;
         if (removed > 0) {
-            std::cout << "    " << day_to_string(d)
+            std::cout << "    " << nbbo::day_to_string(d)
                       << " removed=" << removed
                       << " kept=" << kept << "\n";
         }
@@ -316,7 +277,7 @@ int main(int argc, char** argv) {
         std::cout << "    none\n";
     } else {
         for (const auto& ex : delta_examples) {
-            std::cout << "    day=" << day_to_string(ex.day)
+            std::cout << "    day=" << nbbo::day_to_string(ex.day)
                       << " ts_prev=" << ex.ts_prev
                       << " ts_curr=" << ex.ts_curr
                       << " mid_prev=" << ex.mid_prev
