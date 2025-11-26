@@ -10,9 +10,11 @@
 
 namespace nbbo {
 
+// Generic declaration for typed value extraction from Arrow arrays
 template <typename T>
 T ValueAt(const std::shared_ptr<arrow::Array>& arr, int64_t i);
 
+// Specialization for extracting timestamps as uint64_t
 template <>
 inline uint64_t ValueAt<uint64_t>(const std::shared_ptr<arrow::Array>& arr,
                                   int64_t i) {
@@ -23,11 +25,11 @@ inline uint64_t ValueAt<uint64_t>(const std::shared_ptr<arrow::Array>& arr,
       return static_cast<uint64_t>(
           static_cast<const arrow::Int64Array&>(*arr).Value(i));
     default:
-      throw std::runtime_error("Unsupported ts type: " +
-                               arr->type()->ToString());
+      throw std::runtime_error("Unsupported type: " + arr->type()->ToString());
   }
 }
 
+// Specialization for extracting numeric columns as double or float
 template <>
 inline double ValueAt<double>(const std::shared_ptr<arrow::Array>& arr,
                               int64_t i) {
@@ -38,30 +40,41 @@ inline double ValueAt<double>(const std::shared_ptr<arrow::Array>& arr,
     case arrow::Type::DOUBLE:
       return static_cast<const arrow::DoubleArray&>(*arr).Value(i);
     default:
-      throw std::runtime_error("Unsupported mid type: " +
-                               arr->type()->ToString());
+      throw std::runtime_error("Unsupported type: " + arr->type()->ToString());
   }
 }
 
-// helper to open parquet FileReader
 inline std::unique_ptr<parquet::arrow::FileReader> open_parquet_reader(
     const std::string& path, std::shared_ptr<arrow::Schema>& out_schema) {
-  auto rf_res = arrow::io::ReadableFile::Open(path);
-  if (!rf_res.ok()) {
+  // Open a Parquet file and return a FileReader
+
+  // Open file
+  auto readable_file_result = arrow::io::ReadableFile::Open(path);
+  if (!readable_file_result.ok()) {
     throw std::runtime_error("open input failed: " +
-                             rf_res.status().ToString());
+                             readable_file_result.status().ToString());
   }
-  auto fr_res = parquet::arrow::OpenFile(*rf_res, arrow::default_memory_pool());
-  if (!fr_res.ok()) {
+
+  // Open file via parquet reader
+  auto parquet_read_result = parquet::arrow::OpenFile(
+      *readable_file_result, arrow::default_memory_pool());
+  if (!parquet_read_result.ok()) {
     throw std::runtime_error("open parquet reader failed: " +
-                             fr_res.status().ToString());
+                             parquet_read_result.status().ToString());
   }
-  auto reader = std::move(fr_res).ValueOrDie();
+
+  // Validate schema then return reader
+  auto reader = std::move(parquet_read_result).ValueOrDie();
   auto st = reader->GetSchema(&out_schema);
   if (!st.ok()) {
     throw std::runtime_error("get schema failed: " + st.ToString());
   }
   return reader;
+}
+
+// helper used at runtime for validation
+static inline void ARROW_OK(const arrow::Status& st) {
+  if (!st.ok()) throw std::runtime_error(st.ToString());
 }
 
 }  // namespace nbbo

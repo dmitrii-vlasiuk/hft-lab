@@ -50,50 +50,45 @@ target_link_libraries(nbbo_core
 
 target_compile_features(nbbo_core INTERFACE cxx_std_23)
 
+# ------------------------------------------------------------------------------
+# Helper to define nbbo tools
+# ------------------------------------------------------------------------------
+function(add_nbbo_tool name)
+  # Remaining args are sources
+  add_executable(${name} ${ARGN})
+
+  target_link_libraries(${name}
+    PRIVATE
+      nbbo_core
+      ZLIB::ZLIB
+      Threads::Threads
+  )
+  target_compile_features(${name} PRIVATE cxx_std_23)
+  target_compile_options(${name} PRIVATE -O3 -pipe -fvisibility=hidden)
+endfunction()
 
 # ------------------------------------------------------------------------------
-# nbbo_pipeline (existing main, if present)
+# Command-line tools
 # ------------------------------------------------------------------------------
-if (EXISTS "${CMAKE_SOURCE_DIR}/src/nbbo_pipeline.cpp")
-  add_executable(nbbo_pipeline src/nbbo_pipeline.cpp)
-else()
-  add_executable(nbbo_pipeline nbbo_pipeline.cpp)
-endif()
 
-target_link_libraries(
-  nbbo_pipeline
-  PRIVATE
-    nbbo_core
-    ZLIB::ZLIB
-    Threads::Threads
+# nbbo_pipeline
+add_nbbo_tool(nbbo_pipeline src/nbbo_pipeline.cpp)
+
+# clean_mid_spikes
+add_nbbo_tool(clean_mid_spikes src/clean_mid_spikes.cpp)
+
+# build_events
+add_nbbo_tool(build_events
+  src/build_events.cpp
+  src/event_table_builder.cpp
 )
-target_compile_features(nbbo_pipeline PRIVATE cxx_std_23)
 
-# ------------------------------------------------------------------------------
-# clean_mid_spikes (denoiser CLI)
-# ------------------------------------------------------------------------------
-add_executable(clean_mid_spikes src/clean_mid_spikes.cpp)
-target_link_libraries(
-  clean_mid_spikes
-  PRIVATE
-    nbbo_core
-    ZLIB::ZLIB
-    Threads::Threads
+# build_histogram
+add_nbbo_tool(build_histogram
+  src/build_histogram.cpp
+  src/histogram_builder.cpp
+  src/histogram_model.cpp
 )
-target_compile_features(clean_mid_spikes PRIVATE cxx_std_23)
-target_compile_options(clean_mid_spikes PRIVATE -O3 -pipe -fvisibility=hidden)
-
-# # build_events
-# add_executable(build_events src/build_events.cpp)
-# target_link_libraries(
-#   build_events
-#   PRIVATE
-#     nbbo_core
-#     ZLIB::ZLIB
-#     Threads::Threads
-# )
-# target_compile_features(build_events PRIVATE cxx_std_23)
-# target_compile_options(build_events PRIVATE -O3 -pipe -fvisibility=hidden)
 
 # ------------------------------------------------------------------------------
 # IPO/LTO when available
@@ -101,11 +96,11 @@ target_compile_options(clean_mid_spikes PRIVATE -O3 -pipe -fvisibility=hidden)
 include(CheckIPOSupported)
 check_ipo_supported(RESULT ipo_ok OUTPUT ipo_out)
 if (ipo_ok)
-  set_property(TARGET nbbo_pipeline PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
-  set_property(TARGET clean_mid_spikes PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
-  if (TARGET nbbo_audit)
-    set_property(TARGET nbbo_audit PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
-  endif()
+  foreach(tgt nbbo_pipeline clean_mid_spikes build_events)
+    if (TARGET ${tgt})
+      set_property(TARGET ${tgt} PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+    endif()
+  endforeach()
 endif()
 
 message(STATUS "Arrow target:   ${ARROW_TGT}")

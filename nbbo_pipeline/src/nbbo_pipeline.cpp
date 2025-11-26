@@ -47,10 +47,6 @@
 using std::string; using std::string_view;
 namespace fs = std::filesystem;
 
-static inline void ARROW_OK(const arrow::Status& st) {
-    if (!st.ok()) throw std::runtime_error(st.ToString());
-}
-
 /************** Settings *************************/
 struct Settings {
     fs::path in_dir, cache_dir, out_parquet, report_path;
@@ -663,7 +659,7 @@ struct Pipeline {
                 asb.Finish().ValueOrDie(), sprb.Finish().ValueOrDie(),
                 bidb.Finish().ValueOrDie(), askb.Finish().ValueOrDie()
             });
-            ARROW_OK(writer->WriteRecordBatch(*batch));
+            nbbo::ARROW_OK(writer->WriteRecordBatch(*batch));
             total_rows += (uint64_t)nrows_batch;
             nrows_batch = 0;
 
@@ -676,8 +672,8 @@ struct Pipeline {
         }
         void close(const std::shared_ptr<arrow::Schema>& schema){
             flush_batch(schema);
-            ARROW_OK(writer->Close());
-            ARROW_OK(out->Close());
+            nbbo::ARROW_OK(writer->Close());
+            nbbo::ARROW_OK(out->Close());
             std::cerr << "[pass-Parquet] year=" << year << " total=" << total_rows << " (closed)\n";
         }
     };
@@ -747,14 +743,14 @@ struct Pipeline {
                 int yr = nbbo::year_from_ts(r.ts);
                 YearWriter& yw = get_writer(yr);
 
-                ARROW_OK(yw.tsb.Append(r.ts));
-                ARROW_OK(yw.midb.Append(r.mid));
-                if(std::isfinite(r.logret)) ARROW_OK(yw.lrb.Append(r.logret)); else ARROW_OK(yw.lrb.AppendNull());
-                ARROW_OK(yw.bsb.Append(r.bidSize));
-                ARROW_OK(yw.asb.Append(r.askSize));
-                ARROW_OK(yw.sprb.Append(r.spread));
-                ARROW_OK(yw.bidb.Append(r.bid));
-                ARROW_OK(yw.askb.Append(r.ask));
+                nbbo::ARROW_OK(yw.tsb.Append(r.ts));
+                nbbo::ARROW_OK(yw.midb.Append(r.mid));
+                if(std::isfinite(r.logret)) nbbo::ARROW_OK(yw.lrb.Append(r.logret)); else nbbo::ARROW_OK(yw.lrb.AppendNull());
+                nbbo::ARROW_OK(yw.bsb.Append(r.bidSize));
+                nbbo::ARROW_OK(yw.asb.Append(r.askSize));
+                nbbo::ARROW_OK(yw.sprb.Append(r.spread));
+                nbbo::ARROW_OK(yw.bidb.Append(r.bid));
+                nbbo::ARROW_OK(yw.askb.Append(r.ask));
 
                 if(++yw.nrows_batch>=BATCH){
                     yw.flush_batch(schema);

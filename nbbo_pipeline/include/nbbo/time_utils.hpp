@@ -4,6 +4,12 @@
 
 namespace nbbo {
 
+// Provides utils for working with nbbo timestamps
+// - Extracts calendar fields (year, month, day, time)
+// - Computes ms since midnight
+// - Increments timestamps by 1 ms
+// - Extracts day indicators used when data processing
+
 inline uint32_t ymd(uint64_t ts) {
   return static_cast<uint32_t>(ts / 1000000000ULL);
 }
@@ -49,7 +55,6 @@ inline int year_from_ts(uint64_t ts) {
   return static_cast<int>(ts / 10000000000000ULL);
 }
 
-// Used in cleaning / events
 inline uint32_t day_from_ts(uint64_t ts) {
   return static_cast<uint32_t>(ts / 1000000000ULL);
 }
