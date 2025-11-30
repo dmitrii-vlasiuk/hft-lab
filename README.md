@@ -9,6 +9,7 @@ General overview about the repo here...to be completed later
 ```bash
 brew update
 brew install apache-arrow
+brew install nlohmann-json
 ```
 
 ### 2. Configure and build
@@ -37,5 +38,11 @@ Output: `data/research/events/SPY_YYYY_events.parquet`
 ```bash
 ./nbbo_pipeline/scripts/run_build_histogram.sh
 ```
+
+### 6. Run Backtester (Workflow C)
+
+```bash
+./nbbo_pipeline/scripts/run_backtester.sh
+
 
 Output: `data/research/hist/SPY_histogram.json`

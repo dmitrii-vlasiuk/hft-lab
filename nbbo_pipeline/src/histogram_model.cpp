@@ -2,7 +2,45 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <limits>
+#include <stdexcept>
+
+#include <nlohmann/json.hpp>
+
+using nlohmann::json;
+
+HistogramModel::HistogramModel(const std::string& json_path) {
+  std::ifstream in(json_path);
+  if (!in) {
+    throw std::runtime_error("Failed to open histogram JSON: " + json_path);
+  }
+
+  json j;
+  in >> j;
+
+  // alpha is optional, default 1.0 if not present
+  alpha = j.value("alpha", 1.0);
+
+  if (!j.contains("cells") || !j["cells"].is_array()) {
+    throw std::runtime_error("Histogram JSON missing 'cells' array");
+  }
+
+  const auto& jcells = j["cells"];
+  if (static_cast<int>(jcells.size()) != N_CELLS) {
+    throw std::runtime_error("Histogram JSON cells.size() != N_CELLS");
+  }
+
+  for (int k = 0; k < N_CELLS; ++k) {
+    const auto& cj = jcells[k];
+    CellStats cs;
+    cs.n          = cj.value("n",          static_cast<std::uint64_t>(0));
+    cs.n_up       = cj.value("n_up",       static_cast<std::uint64_t>(0));
+    cs.n_down     = cj.value("n_down",     static_cast<std::uint64_t>(0));
+    cs.sum_tau_ms = cj.value("sum_tau_ms", 0.0);
+    cells[k] = cs;
+  }
+}
 
 int HistogramModel::imb_bin(double I) const {
   // Clamp imbalance to [-1, 1] defensively
