@@ -90,13 +90,26 @@ add_nbbo_tool(build_histogram
   src/histogram_model.cpp
 )
 
+# backtester tool
+add_executable(run_backtester
+  src/run_backtester.cpp
+  src/backtester.cpp
+  src/histogram_model.cpp
+)
+
+target_link_libraries(run_backtester
+  PRIVATE
+    nbbo_core
+)
+target_compile_features(run_backtester PRIVATE cxx_std_23)
+
 # ------------------------------------------------------------------------------
 # IPO/LTO when available
 # ------------------------------------------------------------------------------
 include(CheckIPOSupported)
 check_ipo_supported(RESULT ipo_ok OUTPUT ipo_out)
 if (ipo_ok)
-  foreach(tgt nbbo_pipeline clean_mid_spikes build_events)
+  foreach(tgt nbbo_pipeline clean_mid_spikes build_events build_histogram run_backtester)
     if (TARGET ${tgt})
       set_property(TARGET ${tgt} PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
     endif()

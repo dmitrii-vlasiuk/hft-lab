@@ -1,0 +1,73 @@
+// nbbo_pipeline/src/run_backtester.cpp
+#include <cstdint>
+#include <filesystem>
+#include <iostream>
+#include <stdexcept>
+#include <string>
+
+#include "nbbo/backtester.hpp"
+#include "nbbo/histogram_model.hpp"
+
+namespace {
+
+std::string JoinPath(const std::string& a, const std::string& b) {
+  if (a.empty()) return b;
+  std::filesystem::path p(a);
+  p /= b;
+  return p.string();
+}
+
+void PrintUsage(const char* prog) {
+  std::cerr << "Usage:\n"
+            << "  " << prog
+            << " <events_dir> <histogram_json> <strategy_config_json>"
+            << " <start_year> <end_year>\n\n"
+            << "Example:\n"
+            << "  " << prog
+            << " data/research/events"
+            << " data/research/hist/SPY_histogram.json"
+            << " config/strategy_params.json 2018 2023\n";
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  if (argc != 6) {
+    PrintUsage(argv[0]);
+    return 1;
+  }
+
+  try {
+    const std::string events_dir = argv[1];
+    const std::string hist_path = argv[2];
+    const std::string cfg_path = argv[3];
+    const int start_year = std::stoi(argv[4]);
+    const int end_year = std::stoi(argv[5]);
+
+    if (start_year > end_year) {
+      throw std::runtime_error("start_year must be <= end_year");
+    }
+
+    nbbo::StrategyConfig cfg = nbbo::LoadStrategyConfig(cfg_path);
+
+    HistogramModel hist(hist_path);
+
+    const std::string trades_out_dir = "data/research/trades";
+    const std::string daily_out_dir = "data/research/pnl";
+
+    nbbo::Backtester backtester(hist, cfg, trades_out_dir, daily_out_dir);
+
+    for (int year = start_year; year <= end_year; ++year) {
+      std::cout << "Running backtester for year " << year << "...\n";
+      std::string fname = "SPY_" + std::to_string(year) + "_events.parquet";
+      const std::string events_path = JoinPath(events_dir, fname);
+      backtester.RunForYear(static_cast<uint32_t>(year), events_path);
+    }
+
+    std::cout << "Backtesting complete.\n";
+    return 0;
+  } catch (const std::exception& ex) {
+    std::cerr << "Error in run_backtester: " << ex.what() << "\n";
+    return 1;
+  }
+}

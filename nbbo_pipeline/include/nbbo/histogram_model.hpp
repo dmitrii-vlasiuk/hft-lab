@@ -27,6 +27,9 @@ struct HistogramModel {
   std::array<CellStats, N_CELLS> cells{};
   double alpha = 1.0;  // Laplace smoothing
 
+  HistogramModel() = default;
+  explicit HistogramModel(const std::string& json_path);
+
   // binning (primitive interface)
   int imb_bin(double I) const;
   int spr_bin(double spread) const;
