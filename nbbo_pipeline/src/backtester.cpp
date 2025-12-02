@@ -240,7 +240,7 @@ void Backtester::RunForYear(uint32_t year, const std::string& events_path) {
   std::shared_ptr<arrow::Table> combined = combined_result.ValueOrDie();
 
   const int ts_idx = schema->GetFieldIndex("ts");
-  const int day_idx = schema->GetFieldIndex("day");
+  const int day_idx = schema->GetFieldIndex("date");
   const int mid_idx = schema->GetFieldIndex("mid");
   const int mid_next_idx = schema->GetFieldIndex("mid_next");
   const int spread_idx = schema->GetFieldIndex("spread");
@@ -336,13 +336,23 @@ void Backtester::ProcessEvent(const nbbo::LabeledEvent& ev,
   const double delta_m = 0.5 * ev.spread;
   const double expected_edge_ret = direction_score * (delta_m / ev.mid);
 
-  const double c_spread = ev.spread / ev.mid;
-  const double c_fee = 2.0 * cfg_.fee_price / ev.mid;
-  const double c_slip = cfg_.slip_price / ev.mid;
-  const double cost_ret = c_spread + c_fee + c_slip;
+  // const double c_spread = ev.spread / ev.mid;
+  // const double c_fee = 2.0 * cfg_.fee_price / ev.mid;
+  // const double c_slip = cfg_.slip_price / ev.mid;
+  // const double cost_ret = c_spread + c_fee + c_slip;
 
-  const double margin_ret = cfg_.min_expected_edge_bps * 1e-4;
-  if (expected_edge_ret <= cost_ret + margin_ret) {
+  const double c_spread = 0.0;
+  const double c_fee    = 0.0;
+  const double c_slip   = 0.0;
+  const double cost_ret = 0.0;
+
+  // const double margin_ret = cfg_.min_expected_edge_bps * 1e-4;
+  // if (expected_edge_ret <= cost_ret + margin_ret) {
+  //   return;
+  // }
+
+  const double margin_ret = 0.0;
+  if (expected_edge_ret <= 0.0) {
     return;
   }
 
