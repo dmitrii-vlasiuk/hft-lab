@@ -6,7 +6,7 @@ set -euo pipefail
 # Run backtester over a range of years for SPY.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-BIN="${ROOT_DIR}/build/nbbo_pipeline/run_backtester"
+BIN="${ROOT_DIR}/nbbo_pipeline/build/run_backtester"
 
 EVENTS_DIR="${ROOT_DIR}/data/research/events"
 HIST_PATH="${ROOT_DIR}/data/research/hist/SPY_histogram.json"

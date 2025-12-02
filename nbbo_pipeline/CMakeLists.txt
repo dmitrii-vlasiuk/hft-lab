@@ -97,6 +97,11 @@ add_executable(run_backtester
   src/histogram_model.cpp
 )
 
+# summarize trades
+add_nbbo_tool(summarize_trades
+  src/summarize_trades.cpp
+)
+
 target_link_libraries(run_backtester
   PRIVATE
     nbbo_core
