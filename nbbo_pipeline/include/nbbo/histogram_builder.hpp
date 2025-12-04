@@ -16,6 +16,7 @@ struct HistogramConfig {
   int year_hi;              // 2022 (inclusive)
   std::string out_path;     // "data/research/hist/SPY_histogram.json"
   double alpha = 1.0;
+  std::string bins_config_path;  // "config/hist_bins_default.json"
 };
 
 class HistogramBuilder {

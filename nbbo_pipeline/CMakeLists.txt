@@ -88,6 +88,7 @@ add_nbbo_tool(build_histogram
   src/build_histogram.cpp
   src/histogram_builder.cpp
   src/histogram_model.cpp
+  src/histogram_bins.cpp
 )
 
 # backtester tool
@@ -95,6 +96,7 @@ add_executable(run_backtester
   src/run_backtester.cpp
   src/backtester.cpp
   src/histogram_model.cpp
+  src/histogram_bins.cpp
 )
 
 # summarize trades

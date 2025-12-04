@@ -7,6 +7,7 @@ BIN="$ROOT/build/build_histogram"
 EVENTS_ROOT="$ROOT/data/research/events"
 OUT_DIR="$ROOT/data/research/hist"
 OUT="$OUT_DIR/SPY_histogram.json"
+CFG="$ROOT/config/hist_bins_default.json"
 
 mkdir -p "$OUT_DIR"
 
@@ -15,4 +16,5 @@ mkdir -p "$OUT_DIR"
   --symbol "SPY" \
   --years "2018:2022" \
   --out "$OUT" \
-  --alpha "1.0"
+  --alpha "1.0" \
+  --bins-config "$CFG"

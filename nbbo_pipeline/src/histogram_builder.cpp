@@ -8,16 +8,33 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "nbbo/arrow_utils.hpp"
+#include "nbbo/histogram_bins.hpp"
+
+using nlohmann::json;
 
 namespace fs = std::filesystem;
 
 HistogramBuilder::HistogramBuilder(const HistogramConfig& cfg) : cfg_(cfg) {
   hist_.alpha = cfg_.alpha;
+
+  if (!cfg_.bins_config_path.empty()) {
+    std::ifstream in(cfg_.bins_config_path);
+    if (!in) {
+      throw std::runtime_error("Failed to open bins-config: " +
+                               cfg_.bins_config_path);
+    }
+    json j;
+    in >> j;
+    hist_.bins = bins_from_json(j);
+  } else {
+    hist_.bins = make_default_histogram_bins();
+  }
 }
 
 void HistogramBuilder::run() {
@@ -166,65 +183,53 @@ void HistogramBuilder::finalize_and_write_json() const {
   ofs << "  \"year_hi\": " << cfg_.year_hi << ",\n";
   ofs << "  \"alpha\": " << hist_.alpha << ",\n";
 
-  // Imbalance bins: 6 bins on [-1,1]
+  // Imbalance bins from hist_.bins
   ofs << "  \"imbalance_bins\": [\n";
-  const char* imb_bin_str[HistogramModel::N_IMB] = {
-      "[-1.0, -0.7)", "[-0.7, -0.3)", "[-0.3, -0.1)",
-      "[-0.1, 0.1]",  "(0.1, 0.3]",   "(0.3, 1.0]"};
   for (int b = 0; b < HistogramModel::N_IMB; ++b) {
-    double lo = 0.0, hi = 0.0;
-    switch (b) {
-      case 0:
-        lo = -1.0;
-        hi = -0.7;
-        break;
-      case 1:
-        lo = -0.7;
-        hi = -0.3;
-        break;
-      case 2:
-        lo = -0.3;
-        hi = -0.1;
-        break;
-      case 3:
-        lo = -0.1;
-        hi = 0.1;
-        break;
-      case 4:
-        lo = 0.1;
-        hi = 0.3;
-        break;
-      case 5:
-        lo = 0.3;
-        hi = 1.0;
-        break;
-      default:
-        lo = 0.0;
-        hi = 0.0;
-        break;
-    }
-    ofs << "    {\"idx\": " << b << ", \"lo\": " << lo << ", \"hi\": " << hi
-        << ", \"interval\": \"" << imb_bin_str[b] << "\"}";
+    const auto& bin = hist_.bins.imb[b];
+    ofs << "    {\"idx\": " << b << ", \"lo\": " << bin.lo
+        << ", \"hi\": " << bin.hi << ", \"interval\": \"" << bin.interval
+        << "\"}";
     if (b + 1 < HistogramModel::N_IMB) ofs << ",";
     ofs << "\n";
   }
   ofs << "  ],\n";
 
-  // Spread bins: based on tick count k = round(spread / 0.01)
-  // bin 0: k <= 1, bin 1: k == 2, bin 2: k >= 3
+  // Spread bins from hist_.bins
   ofs << "  \"spread_bins\": [\n";
-  ofs << "    {\"idx\": 0, \"ticks_min\": 0, \"ticks_max\": 1},\n";
-  ofs << "    {\"idx\": 1, \"ticks_min\": 2, \"ticks_max\": 2},\n";
-  ofs << "    {\"idx\": 2, \"ticks_min\": 3, \"ticks_max\": null}\n";
+  for (int b = 0; b < HistogramModel::N_SPR; ++b) {
+    const auto& bin = hist_.bins.spr[b];
+    ofs << "    {\"idx\": " << b << ", \"ticks_min\": " << bin.ticks_min
+        << ", \"ticks_max\": ";
+    if (bin.max_is_inf) {
+      ofs << "null";
+    } else {
+      ofs << bin.ticks_max;
+    }
+    ofs << "}";
+    if (b + 1 < HistogramModel::N_SPR) ofs << ",";
+    ofs << "\n";
+  }
   ofs << "  ],\n";
 
-  // Age-diff bins: (-inf,-200), [-200,-50), [-50,50], (50,200], (200,inf)
+  // Age-diff bins
   ofs << "  \"age_diff_ms_bins\": [\n";
-  ofs << "    {\"idx\": 0, \"lo\": null,   \"hi\": -200.0},\n";
-  ofs << "    {\"idx\": 1, \"lo\": -200.0, \"hi\": -50.0},\n";
-  ofs << "    {\"idx\": 2, \"lo\": -50.0,  \"hi\": 50.0},\n";
-  ofs << "    {\"idx\": 3, \"lo\": 50.0,   \"hi\": 200.0},\n";
-  ofs << "    {\"idx\": 4, \"lo\": 200.0,  \"hi\": null}\n";
+  for (int b = 0; b < HistogramModel::N_AGE; ++b) {
+    const auto& bin = hist_.bins.age[b];
+    ofs << "    {\"idx\": " << b << ", \"lo\": ";
+    if (bin.lo_is_inf)
+      ofs << "null";
+    else
+      ofs << bin.lo;
+    ofs << ", \"hi\": ";
+    if (bin.hi_is_inf)
+      ofs << "null";
+    else
+      ofs << bin.hi;
+    ofs << "}";
+    if (b + 1 < HistogramModel::N_AGE) ofs << ",";
+    ofs << "\n";
+  }
   ofs << "  ],\n";
 
   // Last-move bins: {-1, 0, +1}
@@ -234,7 +239,7 @@ void HistogramBuilder::finalize_and_write_json() const {
   ofs << "    {\"idx\": 2, \"L\": 1}\n";
   ofs << "  ],\n";
 
-  // 3) Cells with bin indices and derived stats
+  // Cells with bin indices and derived stats
   ofs << "  \"cells\": [\n";
 
   for (int k = 0; k < HistogramModel::N_CELLS; ++k) {

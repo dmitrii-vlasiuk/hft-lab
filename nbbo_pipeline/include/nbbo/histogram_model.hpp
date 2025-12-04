@@ -2,6 +2,8 @@
 #include <array>
 #include <cstdint>
 
+#include "nbbo/histogram_bins.hpp"
+
 struct CellStats {
   std::uint64_t n = 0;       // total count N_k
   std::uint64_t n_up = 0;    // count of Y_t = +1
@@ -18,16 +20,17 @@ struct TickState {
 };
 
 struct HistogramModel {
-  static constexpr int N_IMB = 6;
-  static constexpr int N_SPR = 3;
-  static constexpr int N_AGE = 5;
-  static constexpr int N_LAST = 3;
+  static constexpr int N_IMB = HIST_N_IMB;
+  static constexpr int N_SPR = HIST_N_SPR;
+  static constexpr int N_AGE = HIST_N_AGE;
+  static constexpr int N_LAST = HIST_N_LAST;
   static constexpr int N_CELLS = N_IMB * N_SPR * N_AGE * N_LAST;
 
   std::array<CellStats, N_CELLS> cells{};
   double alpha = 1.0;  // Laplace smoothing
 
-  HistogramModel() = default;
+  HistogramBinSpec bins;
+  HistogramModel();
   explicit HistogramModel(const std::string& json_path);
 
   // binning (primitive interface)
