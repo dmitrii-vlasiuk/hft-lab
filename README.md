@@ -43,6 +43,6 @@ Output: `data/research/events/SPY_YYYY_events.parquet`
 
 ```bash
 ./nbbo_pipeline/scripts/run_backtester.sh
-
+```
 
 Output: `data/research/hist/SPY_histogram.json`
