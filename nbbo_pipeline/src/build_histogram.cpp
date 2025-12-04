@@ -8,7 +8,7 @@
 static void usage_and_exit(const char* argv0) {
   std::fprintf(stderr,
                R"(Usage:
-  %s --events-root <dir> --symbol <SYM> --years <YYYY:YYYY> --out <histogram.json> [--alpha <float>]
+  %s --events-root <dir> --symbol <SYM> --years <YYYY:YYYY> --out <histogram.json> [--alpha <float>] [--bins-config <path>]
 
 Description:
   Reads per-event Parquet files produced by build_events for the given
@@ -20,7 +20,8 @@ Example:
      --symbol SPY \
      --years 2018:2022 \
      --out data/research/hist/SPY_histogram.json \
-     --alpha 1.0
+     --alpha 1.0 \
+     --bins-config config/hist_bins_default.json
 )",
                argv0, argv0);
   std::exit(2);
@@ -47,6 +48,8 @@ static HistogramConfig parse_args(int argc, char** argv) {
       cfg.out_path = argv[++i];
     } else if (a == "--alpha" && i + 1 < argc) {
       cfg.alpha = std::stod(argv[++i]);
+    } else if (a == "--bins-config" && i + 1 < argc) {
+      cfg.bins_config_path = argv[++i];
     } else if (a == "--help" || a == "-h") {
       usage_and_exit(argv[0]);
     } else {

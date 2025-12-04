@@ -1,16 +1,22 @@
+
+
 #include "nbbo/histogram_model.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <limits>
+#include <nlohmann/json.hpp>
 #include <stdexcept>
 
-#include <nlohmann/json.hpp>
+#include "nbbo/histogram_bins.hpp"
 
 using nlohmann::json;
 
-HistogramModel::HistogramModel(const std::string& json_path) {
+HistogramModel::HistogramModel() : bins(make_default_histogram_bins()) {}
+
+HistogramModel::HistogramModel(const std::string& json_path)
+    : bins(make_default_histogram_bins()) {
   std::ifstream in(json_path);
   if (!in) {
     throw std::runtime_error("Failed to open histogram JSON: " + json_path);
@@ -21,6 +27,11 @@ HistogramModel::HistogramModel(const std::string& json_path) {
 
   // alpha is optional, default 1.0 if not present
   alpha = j.value("alpha", 1.0);
+
+  if (j.contains("imbalance_bins") || j.contains("spread_bins") ||
+      j.contains("age_diff_ms_bins") || j.contains("last_move_bins")) {
+    bins = bins_from_json(j);
+  }
 
   if (!j.contains("cells") || !j["cells"].is_array()) {
     throw std::runtime_error("Histogram JSON missing 'cells' array");
@@ -34,31 +45,26 @@ HistogramModel::HistogramModel(const std::string& json_path) {
   for (int k = 0; k < N_CELLS; ++k) {
     const auto& cj = jcells[k];
     CellStats cs;
-    cs.n          = cj.value("n",          static_cast<std::uint64_t>(0));
-    cs.n_up       = cj.value("n_up",       static_cast<std::uint64_t>(0));
-    cs.n_down     = cj.value("n_down",     static_cast<std::uint64_t>(0));
+    cs.n = cj.value("n", static_cast<std::uint64_t>(0));
+    cs.n_up = cj.value("n_up", static_cast<std::uint64_t>(0));
+    cs.n_down = cj.value("n_down", static_cast<std::uint64_t>(0));
     cs.sum_tau_ms = cj.value("sum_tau_ms", 0.0);
     cells[k] = cs;
   }
 }
 
 int HistogramModel::imb_bin(double I) const {
-  // Clamp imbalance to [-1, 1] defensively
+  // Clamp imbalance to [-1, 1]
   if (I < -1.0) I = -1.0;
   if (I > 1.0) I = 1.0;
 
-  if (I < -0.7)
-    return 0;
-  else if (I < -0.3)
-    return 1;
-  else if (I < -0.1)
-    return 2;
-  else if (I <= 0.1)
-    return 3;
-  else if (I <= 0.3)
-    return 4;
-  else
-    return 5;
+  for (int b = 0; b < N_IMB; ++b) {
+    const auto& bin = bins.imb[b];
+    bool ok_lo = bin.lo_inclusive ? I >= bin.lo : I > bin.lo;
+    bool ok_hi = bin.hi_inclusive ? I <= bin.hi : I < bin.hi;
+    if (ok_lo && ok_hi) return b;
+  }
+  return N_IMB - 1;
 }
 
 int HistogramModel::spr_bin(double spread) const {
@@ -71,30 +77,34 @@ int HistogramModel::spr_bin(double spread) const {
   }
 
   int k = static_cast<int>(std::llround(spread / delta));
-  if (k <= 1) return 0;  // 1 tick or less
-  if (k == 2) return 1;  // 2 ticks
-  return 2;              // 3+ ticks
+  for (int b = 0; b < N_SPR; ++b) {
+    const auto& bin = bins.spr[b];
+    if (k < bin.ticks_min) continue;
+    if (!bin.max_is_inf && k > bin.ticks_max) continue;
+    return b;
+  }
+  return N_SPR - 1;
 }
 
 int HistogramModel::age_bin(double age_diff_ms) const {
   // age_diff_ms = Age(bid) - Age(ask)
-  if (age_diff_ms < -200.0)
-    return 0;
-  else if (age_diff_ms < -50.0)
-    return 1;
-  else if (age_diff_ms <= 50.0)
-    return 2;
-  else if (age_diff_ms <= 200.0)
-    return 3;
-  else
-    return 4;
+  for (int b = 0; b < N_AGE; ++b) {
+    const auto& bin = bins.age[b];
+    bool ok_lo = bin.lo_is_inf ? true
+                               : (bin.lo_inclusive ? age_diff_ms >= bin.lo
+                                                   : age_diff_ms > bin.lo);
+    bool ok_hi = bin.hi_is_inf ? true
+                               : (bin.hi_inclusive ? age_diff_ms <= bin.hi
+                                                   : age_diff_ms < bin.hi);
+    if (ok_lo && ok_hi) return b;
+  }
+  return N_AGE - 1;
 }
 
 int HistogramModel::last_bin(double L) const {
-  // L in {-1, 0, +1} ideally; threshold around 0
-  if (L < -0.5) return 0;  // last move down
-  if (L > 0.5) return 2;   // last move up
-  return 1;                // no prior move / flat
+  if (L < bins.last.down_cut) return 0;
+  if (L > bins.last.up_cut) return 2;
+  return 1;
 }
 
 int HistogramModel::cell_index(double I,

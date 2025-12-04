@@ -1,0 +1,35 @@
+{
+  "symbol": "SPY",
+  "year_lo": 2018,
+  "year_hi": 2022,
+  "alpha": 1,
+
+  "imbalance_bins": [
+    { "idx": 0, "lo": -1.0, "hi": -0.7, "interval": "[-1.0, -0.7)" },
+    { "idx": 1, "lo": -0.7, "hi": -0.3, "interval": "[-0.7, -0.3)" },
+    { "idx": 2, "lo": -0.3, "hi": -0.1, "interval": "[-0.3, -0.1)" },
+    { "idx": 3, "lo": -0.1, "hi": 0.1, "interval": "[-0.1, 0.1]" },
+    { "idx": 4, "lo": 0.1, "hi": 0.3, "interval": "(0.1, 0.3]" },
+    { "idx": 5, "lo": 0.3, "hi": 1.0, "interval": "(0.3, 1.0]" }
+  ],
+
+  "spread_bins": [
+    { "idx": 0, "ticks_min": 0, "ticks_max": 1 },
+    { "idx": 1, "ticks_min": 2, "ticks_max": 2 },
+    { "idx": 2, "ticks_min": 3, "ticks_max": null }
+  ],
+
+  "age_diff_ms_bins": [
+    { "idx": 0, "lo": null, "hi": -200.0 },
+    { "idx": 1, "lo": -200.0, "hi": -50.0 },
+    { "idx": 2, "lo": -50.0, "hi": 50.0 },
+    { "idx": 3, "lo": 50.0, "hi": 200.0 },
+    { "idx": 4, "lo": 200.0, "hi": null }
+  ],
+
+  "last_move_bins": [
+    { "idx": 0, "L": -1 },
+    { "idx": 1, "L": 0 },
+    { "idx": 2, "L": 1 }
+  ]
+}
