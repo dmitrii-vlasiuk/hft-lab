@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <ranges>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -125,13 +126,13 @@ void PnLAggregator::WriteTradesCsv() const {
 
   out << std::setprecision(10);
 
-  for (const auto& t : trades_) {
+  std::ranges::for_each(trades_, [&](const TradeRecord& t) {
     out << t.ts_in << ',' << t.ts_out << ',' << t.day << ','
         << t.mid_in << ',' << t.mid_out << ',' << t.spread_in << ','
         << t.direction_score << ',' << t.expected_edge_ret << ','
         << t.cost_ret << ',' << t.gross_ret << ',' << t.net_ret << ','
         << t.side << '\n';
-  }
+  });
 }
 
 void PnLAggregator::WriteDailyCsv() const {
@@ -154,12 +155,12 @@ void PnLAggregator::WriteDailyCsv() const {
 
   out << std::setprecision(10);
 
-  for (const auto& row : daily_rows_) {
+  std::ranges::for_each(daily_rows_, [&](const DailyPnlRow& row) {
     out << row.day << ',' << row.num_trades << ','
         << row.gross_ret_sum << ',' << row.net_ret_sum << ','
         << row.gross_ret_mean << ',' << row.net_ret_mean << ','
         << row.cumulative_net_ret << '\n';
-  }
+  });
 }
 
 void PnLAggregator::FinalizeYear() {
