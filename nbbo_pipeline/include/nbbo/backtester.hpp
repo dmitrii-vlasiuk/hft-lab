@@ -50,7 +50,8 @@ struct StrategyConfig {
 };
 
 // Load StrategyConfig from a flat JSON file (no nested objects).
-// This uses a very lightweight parser (ExtractDouble) rather than a full JSON lib.
+// Implemented in strategy_config.cpp using nlohmann::json and a from_json
+// adapter for StrategyConfig.
 StrategyConfig LoadStrategyConfig(const std::string& path);
 
 // Per–trade record written out to SPY_YYYY_trades.csv.

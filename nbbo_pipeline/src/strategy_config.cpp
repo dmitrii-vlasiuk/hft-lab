@@ -1,121 +1,77 @@
 // nbbo_pipeline/src/strategy_config.cpp
 #include "nbbo/backtester.hpp"
 
-#include <cctype>
 #include <fstream>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 
-namespace {
-
-// Very lightweight JSON number extractor for flat config keys.
-// This is NOT a full JSON parser—just enough to grab
-//   "<key>": <number>
-// assuming flat config files.
-double ExtractDouble(const std::string& json,
-                     const std::string& key,
-                     double default_value) {
-  const std::string quoted_key = "\"" + key + "\"";
-  auto pos = json.find(quoted_key);
-  if (pos == std::string::npos) {
-    return default_value;
-  }
-  pos = json.find(':', pos);
-  if (pos == std::string::npos) {
-    return default_value;
-  }
-  ++pos;
-  while (pos < json.size() &&
-         std::isspace(static_cast<unsigned char>(json[pos]))) {
-    ++pos;
-  }
-
-  std::string number_str;
-  while (pos < json.size()) {
-    char c = json[pos];
-    if ((c >= '0' && c <= '9') || c == '-' || c == '+' ||
-        c == '.' || c == 'e' || c == 'E') {
-      number_str.push_back(c);
-      ++pos;
-    } else {
-      break;
-    }
-  }
-
-  if (number_str.empty()) {
-    return default_value;
-  }
-
-  try {
-    return std::stod(number_str);
-  } catch (...) {
-    return default_value;
-  }
-}
-
-}  // namespace
+#include <nlohmann/json.hpp>
 
 namespace nbbo {
 
-// Loads the trading strategy configuration from a flat JSON file.
-// Fields it expects (with defaults from StrategyConfig in backtester.hpp):
-//   - fee_price              : per-leg fee in *price* units (e.g. $0.03/share)
-//   - slip_price             : extra slippage cushion in price units
-//   - min_abs_direction_score: minimum |signal| to trade
-//   - min_expected_edge_bps  : optional edge gate in bps of return
-//   - max_mean_wait_ms       : optional cap on expected waiting time (from histogram)
-//   - edge_mode              : 0 = legacy, 1 = new Mode A, 2 = new Mode B
-//   - legacy_mode            : backwards-compat alias; nonzero => edge_mode = 0
+using nlohmann::json;
+
+// from_json adapter so StrategyConfig can be constructed via j.get<StrategyConfig>().
+//
+// This keeps the existing field names and defaults from StrategyConfig in
+// backtester.hpp, but uses a real JSON library instead of a hand-rolled parser.
+// It also supports a couple of backwards-compat alias keys.
+void from_json(const json& j, StrategyConfig& cfg) {
+  // Start from the struct defaults declared in backtester.hpp.
+  cfg = StrategyConfig{};
+
+  if (j.contains("fee_price")) {
+    j.at("fee_price").get_to(cfg.fee_price);
+  }
+  if (j.contains("slip_price")) {
+    j.at("slip_price").get_to(cfg.slip_price);
+  }
+  if (j.contains("min_abs_direction_score")) {
+    j.at("min_abs_direction_score").get_to(cfg.min_abs_direction_score);
+  }
+  if (j.contains("min_expected_edge_bps")) {
+    j.at("min_expected_edge_bps").get_to(cfg.min_expected_edge_bps);
+  }
+  if (j.contains("max_mean_wait_ms")) {
+    j.at("max_mean_wait_ms").get_to(cfg.max_mean_wait_ms);
+  }
+
+  // Primary edge_mode selector (0 = legacy, 1 = Mode A, 2 = Mode B).
+  int mode_int = 2;  // default to "CostWithGate"
+  if (j.contains("edge_mode")) {
+    mode_int = j.at("edge_mode").get<int>();
+  }
+  cfg.edge_mode = static_cast<EdgeMode>(mode_int);
+
+  // Backwards-compat alias: legacy_mode != 0 forces edge_mode = Legacy.
+  int legacy_mode = 0;
+  if (j.contains("legacy_mode")) {
+    legacy_mode = j.at("legacy_mode").get<int>();
+  }
+  if (legacy_mode != 0) {
+    cfg.edge_mode = EdgeMode::Legacy;
+  }
+
+  // Optional backwards-compat aliases with different naming.
+  // If present and the primary key is absent, use the alias.
+  if (j.contains("fee_per_leg") && !j.contains("fee_price")) {
+    j.at("fee_per_leg").get_to(cfg.fee_price);
+  }
+  if (j.contains("min_expected_edge") && !j.contains("min_expected_edge_bps")) {
+    j.at("min_expected_edge").get_to(cfg.min_expected_edge_bps);
+  }
+}
+
+// Load StrategyConfig from a JSON file.
 StrategyConfig LoadStrategyConfig(const std::string& path) {
   std::ifstream in(path);
   if (!in) {
     throw std::runtime_error("Failed to open strategy config: " + path);
   }
-  std::ostringstream oss;
-  oss << in.rdbuf();
-  const std::string json = oss.str();
 
-  StrategyConfig cfg;
-  cfg.fee_price =
-      ExtractDouble(json, "fee_price", cfg.fee_price);
-  cfg.slip_price =
-      ExtractDouble(json, "slip_price", cfg.slip_price);
-  cfg.min_abs_direction_score =
-      ExtractDouble(json, "min_abs_direction_score",
-                    cfg.min_abs_direction_score);
-  cfg.min_expected_edge_bps =
-      ExtractDouble(json, "min_expected_edge_bps",
-                    cfg.min_expected_edge_bps);
-  cfg.max_mean_wait_ms =
-      ExtractDouble(json, "max_mean_wait_ms",
-                    cfg.max_mean_wait_ms);
-
-  // New: edge_mode (0 = legacy, 1 = new Mode A, 2 = new Mode B)
-  const double edge_mode_val =
-      ExtractDouble(json, "edge_mode", 2.0);  // default to Mode B
-
-  const int edge_mode_int = static_cast<int>(edge_mode_val);
-  switch (edge_mode_int) {
-    case 0:
-      cfg.edge_mode = EdgeMode::Legacy;
-      break;
-    case 1:
-      cfg.edge_mode = EdgeMode::CostTradeAll;
-      break;
-    case 2:
-    default:
-      cfg.edge_mode = EdgeMode::CostWithGate;
-      break;
-  }
-
-  // Backwards-compat alias: legacy_mode != 0 forces edge_mode = 0 (Legacy)
-  const double legacy_val = ExtractDouble(json, "legacy_mode", 0.0);
-  if (legacy_val != 0.0) {
-    cfg.edge_mode = EdgeMode::Legacy;
-  }
-
-  return cfg;
+  json j;
+  in >> j;
+  return j.get<StrategyConfig>();
 }
 
 }  // namespace nbbo
