@@ -1,6 +1,7 @@
 // nbbo_pipeline/src/pnl_aggregator.cpp
 #include "nbbo/backtester.hpp"
 
+#include <cassert>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -36,13 +37,21 @@ void PnLAggregator::StartYear(uint32_t year) {
   day_gross_sum_ = 0.0;
   day_net_sum_ = 0.0;
   cumulative_net_ = 0.0;
+
+  CheckInvariants();
 }
 
 void PnLAggregator::OnTrade(const TradeRecord& trade) {
-  if (trade.day == 0) return;
+  CheckInvariants();
+
+  if (trade.day == 0) {
+    // Ignore trades that don't have a calendar day.
+    return;
+  }
 
   // When the calendar day changes, close out the previous day's row.
   if (current_day_ == 0) {
+    // First trade of the year.
     current_day_ = trade.day;
   } else if (trade.day != current_day_) {
     FlushCurrentDay();
@@ -52,36 +61,47 @@ void PnLAggregator::OnTrade(const TradeRecord& trade) {
   trades_.push_back(trade);
 
   // Update daily aggregations.
-  day_trade_count_++;
+  ++day_trade_count_;
   day_gross_sum_ += trade.gross_ret;
-  day_net_sum_ += trade.net_ret;
+  day_net_sum_   += trade.net_ret;
   cumulative_net_ += trade.net_ret;
+
+  CheckInvariants();
 }
 
 void PnLAggregator::FlushCurrentDay() {
+  // If there's no open day or no trades, there is nothing to flush.
   if (current_day_ == 0 || day_trade_count_ == 0) {
-    // Nothing to flush (no trades for this day)
+#ifndef NDEBUG
+    // Invariant: when we say "nothing to flush", per-day counters must be zero.
+    assert(day_trade_count_ == 0);
+    assert(day_gross_sum_ == 0.0);
+    assert(day_net_sum_ == 0.0);
+#endif
     return;
   }
 
   // Aggregate stats for this day and push into daily_rows_.
   DailyPnlRow row;
-  row.day = current_day_;
-  row.num_trades = day_trade_count_;
-  row.gross_ret_sum = day_gross_sum_;
-  row.net_ret_sum = day_net_sum_;
-  row.gross_ret_mean =
+  row.day              = current_day_;
+  row.num_trades       = day_trade_count_;
+  row.gross_ret_sum    = day_gross_sum_;
+  row.net_ret_sum      = day_net_sum_;
+  row.gross_ret_mean   =
       day_gross_sum_ / static_cast<double>(day_trade_count_);
-  row.net_ret_mean =
+  row.net_ret_mean     =
       day_net_sum_ / static_cast<double>(day_trade_count_);
   row.cumulative_net_ret = cumulative_net_;
 
   daily_rows_.push_back(row);
 
-  // Reset per-day counters for next day.
+  // Reset per-day counters for next day. current_day_ is left as-is;
+  // it will be updated on the next trade or cleared by StartYear.
   day_trade_count_ = 0;
-  day_gross_sum_ = 0.0;
-  day_net_sum_ = 0.0;
+  day_gross_sum_   = 0.0;
+  day_net_sum_     = 0.0;
+
+  CheckInvariants();
 }
 
 void PnLAggregator::WriteTradesCsv() const {
@@ -145,9 +165,42 @@ void PnLAggregator::WriteDailyCsv() const {
 void PnLAggregator::FinalizeYear() {
   // Flush last day and then write CSVs for this year.
   FlushCurrentDay();
+  CheckInvariants();
+
   if (year_ == 0) return;
   WriteTradesCsv();
   WriteDailyCsv();
+}
+
+void PnLAggregator::CheckInvariants() const {
+#ifndef NDEBUG
+  // Invariant 1: if current_day_ == 0 then we must not have an open day.
+  if (current_day_ == 0) {
+    assert(day_trade_count_ == 0);
+    assert(day_gross_sum_ == 0.0);
+    assert(day_net_sum_ == 0.0);
+  }
+
+  // Invariant 2: if we say there are no trades for the current day,
+  // per-day sums should be zero.
+  if (day_trade_count_ == 0) {
+    assert(day_gross_sum_ == 0.0);
+    assert(day_net_sum_ == 0.0);
+  }
+
+  // Invariant 3: daily_rows_ is strictly increasing in day and days are > 0.
+  uint32_t prev_day = 0;
+  for (const auto& row : daily_rows_) {
+    assert(row.day > 0);
+    assert(row.day > prev_day);
+    prev_day = row.day;
+  }
+
+  // Invariant 4: if there is an open day, its day must be after any flushed day.
+  if (!daily_rows_.empty() && current_day_ != 0) {
+    assert(current_day_ > daily_rows_.back().day);
+  }
+#endif
 }
 
 }  // namespace nbbo

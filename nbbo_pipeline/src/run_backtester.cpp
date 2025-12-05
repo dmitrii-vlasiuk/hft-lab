@@ -66,20 +66,14 @@ int main(int argc, char** argv) {
     }
 
     // Load strategy parameters from JSON:
-    //   fee_price, slip_price, min_abs_direction_score,
-    //   min_expected_edge_bps, max_mean_wait_ms, etc.
     nbbo::StrategyConfig cfg = nbbo::LoadStrategyConfig(cfg_path);
 
     // Load histogram model from JSON:
-    //   - direction_score(state)
-    //   - mean_tau_ms(state)
     HistogramModel hist(hist_path);
 
     // Hard-coded output directories for:
     //   - per-trade CSVs (trades_out_dir)
     //   - per-day PnL CSVs (daily_out_dir)
-    //
-    // These are used inside nbbo::PnLAggregator.
     const std::string trades_out_dir = "data/research/trades";
     const std::string daily_out_dir  = "data/research/pnl";
 
@@ -87,7 +81,8 @@ int main(int argc, char** argv) {
     //   - histogram model
     //   - strategy config
     //   - output directories
-    nbbo::Backtester backtester(hist, cfg, trades_out_dir, daily_out_dir);
+    nbbo::Backtester<nbbo::HistogramEdgeStrategy> backtester(
+        hist, cfg, trades_out_dir, daily_out_dir);
 
     // Main loop: run the backtest for each year in [start_year, end_year],
     // reading SPY_<year>_events.parquet from events_dir.
@@ -101,8 +96,6 @@ int main(int argc, char** argv) {
     std::cout << "Backtesting complete.\n";
     return 0;
   } catch (const std::exception& ex) {
-    // Catch any exceptions (I/O, Arrow/parquet errors, config issues, etc.)
-    // and print a clear message for debugging.
     std::cerr << "Error in run_backtester: " << ex.what() << "\n";
     return 1;
   }
