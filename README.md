@@ -238,3 +238,37 @@ data/research/hist/SPY_histogram.json
 data/research/trades/SPY_{YYYY}_trades.csv
 data/research/daily/SPY_{YYYY}_daily.csv
 ```
+
+## 7. Run Summarize Trades
+
+The summarize trades tool computes year-by-year performance statistics from the backtester’s per-trade CSVs in `data/research/trades/`. For each year, it aggregates total net return, the number of trades, win/loss counts, average win/loss, and best/worst trades. The output is a human-readable text report that can be inspected directly or tracked across different strategy configurations.
+
+By default, the helper script summarizes the years 2018–2023, but you can pass a custom list or range of years on the command line (e.g., `2019-2021`, `2018 2020 2022`, or `2018 2020-2022 2024`).
+
+**Run command:**
+
+```bash
+./nbbo_pipeline/scripts/summarize_trades.sh
+```
+
+**Input:**
+
+```bash
+data/research/trades/SPY_{YYYY}_trades.csv
+```
+
+To use a custom year range or list, pass it as arguments to the script:
+
+```bash
+# Single range
+./nbbo_pipeline/scripts/summarize_trades.sh 2019-2021
+
+# Mixed list + range
+./nbbo_pipeline/scripts/summarize_trades.sh 2018 2020-2022 2024
+```
+
+**Output:**
+```bash
+data/research/summary/yearly_pnl.txt
+```
+
