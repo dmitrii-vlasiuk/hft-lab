@@ -93,14 +93,26 @@ StrategyConfig LoadStrategyConfig(const std::string& path) {
 
   // New: edge_mode (0 = legacy, 1 = new Mode A, 2 = new Mode B)
   const double edge_mode_val =
-      ExtractDouble(json, "edge_mode",
-                    static_cast<double>(cfg.edge_mode));
-  cfg.edge_mode = static_cast<int>(edge_mode_val);
+      ExtractDouble(json, "edge_mode", 2.0);  // default to Mode B
 
-  // Backwards-compat alias: legacy_mode != 0 forces edge_mode = 0
+  const int edge_mode_int = static_cast<int>(edge_mode_val);
+  switch (edge_mode_int) {
+    case 0:
+      cfg.edge_mode = EdgeMode::Legacy;
+      break;
+    case 1:
+      cfg.edge_mode = EdgeMode::CostTradeAll;
+      break;
+    case 2:
+    default:
+      cfg.edge_mode = EdgeMode::CostWithGate;
+      break;
+  }
+
+  // Backwards-compat alias: legacy_mode != 0 forces edge_mode = 0 (Legacy)
   const double legacy_val = ExtractDouble(json, "legacy_mode", 0.0);
   if (legacy_val != 0.0) {
-    cfg.edge_mode = 0;
+    cfg.edge_mode = EdgeMode::Legacy;
   }
 
   return cfg;
