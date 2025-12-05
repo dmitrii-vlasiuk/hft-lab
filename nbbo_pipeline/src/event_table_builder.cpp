@@ -164,7 +164,7 @@ void EventTableBuilder::process_row(
 
   // When the calendar day changes, the previous event must be dropped
   uint32_t day = nbbo::day_from_ts(ts);
-  int ms = nbbo::ms_since_midnight(ts);
+  int ms = static_cast<int>(nbbo::ms_since_midnight_chrono(ts).count());
   if (!have_day_ || day != curr_day_) {
     start_new_day(day, ts, bid, ask);
   }
@@ -209,7 +209,7 @@ void EventTableBuilder::start_new_day(uint32_t day,
   have_day_ = true;
 
   // Reset quote age based on first tick of the day
-  int ms = nbbo::ms_since_midnight(ts);
+  int ms = static_cast<int>(nbbo::ms_since_midnight_chrono(ts).count());
   last_bid_price_ = bid;
   last_ask_price_ = ask;
   bid_origin_ms_ = ms;
@@ -269,7 +269,8 @@ void EventTableBuilder::label_and_emit_prev(const nbbo::LabeledEvent& event,
     prev_event_.y = (dmid > 0.0 ? 1.0 : (dmid < 0.0 ? -1.0 : 0.0));
 
     // Waiting time until next event
-    int ms_prev = nbbo::ms_since_midnight(prev_event_.ts);
+    int ms_prev = static_cast<int>(
+        nbbo::ms_since_midnight_chrono(prev_event_.ts).count());
     prev_event_.tau_ms = static_cast<double>(ms_curr - ms_prev);
 
     writer_.append(prev_event_);

@@ -1,3 +1,8 @@
+// histogram_bins.cpp
+//
+// Defines the default 4D binning scheme for the histogram model
+// (imbalance, spread, age_diff_ms, last_move) and provides JSON load/save helpers for those bin specs.
+
 #include "nbbo/histogram_bins.hpp"
 
 #include <climits>

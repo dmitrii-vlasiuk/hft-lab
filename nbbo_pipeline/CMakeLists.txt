@@ -83,20 +83,48 @@ add_nbbo_tool(build_events
   src/event_table_builder.cpp
 )
 
-# build_histogram
-add_nbbo_tool(build_histogram
-  src/build_histogram.cpp
-  src/histogram_builder.cpp
+# ----------------------------------------------------------------------
+# Histogram library (model + bins)
+# ----------------------------------------------------------------------
+add_library(nbbo_histogram
   src/histogram_model.cpp
   src/histogram_bins.cpp
 )
 
+# Inherit include dirs + Arrow/Parquet from nbbo_core
+target_link_libraries(nbbo_histogram
+  PUBLIC
+    nbbo_core
+)
+
+# ----------------------------------------------------------------------
+# build_histogram tool
+# ----------------------------------------------------------------------
+add_nbbo_tool(build_histogram
+  src/build_histogram.cpp
+  src/histogram_builder.cpp
+)
+
+# Link against nbbo_histogram (which already pulls in nbbo_core)
+target_link_libraries(build_histogram
+  PRIVATE
+    nbbo_histogram
+)
+
+# ----------------------------------------------------------------------
 # backtester tool
-add_executable(run_backtester
+# ----------------------------------------------------------------------
+add_nbbo_tool(run_backtester
   src/run_backtester.cpp
   src/backtester.cpp
-  src/histogram_model.cpp
-  src/histogram_bins.cpp
+  src/strategy_config.cpp
+  src/pnl_aggregator.cpp
+)
+
+# Backtester also needs histogram
+target_link_libraries(run_backtester
+  PRIVATE
+    nbbo_histogram
 )
 
 # summarize trades

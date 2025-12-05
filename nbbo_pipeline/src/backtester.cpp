@@ -4,386 +4,366 @@
 #include <arrow/api.h>
 #include <parquet/arrow/reader.h>
 
-#include <algorithm>
 #include <cmath>
-#include <filesystem>
-#include <fstream>
-#include <iomanip>
-#include <iostream>
-#include <sstream>
+#include <memory>
+#include <optional>
 #include <stdexcept>
+#include <vector>
 
 #include "nbbo/arrow_utils.hpp"
 
+namespace nbbo {
 namespace {
 
-double ExtractDouble(const std::string& json,
-                     const std::string& key,
-                     double default_value) {
-  const std::string quoted_key = "\"" + key + "\"";
-  auto pos = json.find(quoted_key);
-  if (pos == std::string::npos) {
-    return default_value;
-  }
-  pos = json.find(':', pos);
-  if (pos == std::string::npos) {
-    return default_value;
-  }
-  ++pos;
-  while (pos < json.size() && std::isspace(static_cast<unsigned char>(json[pos]))) {
-    ++pos;
+using UInt64Array = arrow::UInt64Array;
+using UInt32Array = arrow::UInt32Array;
+using DoubleArray = arrow::DoubleArray;
+
+// A small RAII wrapper that streams LabeledEvent rows from a Parquet file.
+//
+// Invariants:
+//  - Constructor verifies the schema has the expected columns and projects
+//    only those columns.
+//  - next(ev) returns true and fully-populates ev, or returns false at EOF.
+class LabeledEventStream {
+ public:
+  explicit LabeledEventStream(const std::string& events_path);
+
+  // Fill ev with the next row; return false on EOF.
+  bool next(LabeledEvent& ev);
+
+ private:
+  std::string path_;
+
+  std::shared_ptr<arrow::Schema> schema_;
+  std::unique_ptr<parquet::arrow::FileReader> reader_;
+  std::unique_ptr<arrow::RecordBatchReader> batch_reader_;
+
+  std::shared_ptr<arrow::RecordBatch> batch_;
+  int64_t row_index_ = 0;
+  int64_t row_count_ = 0;
+
+  // Column views for the current batch (projected in a fixed order).
+  std::shared_ptr<UInt64Array> ts_arr_;
+  std::shared_ptr<UInt32Array> day_arr_;
+  std::shared_ptr<DoubleArray> mid_arr_;
+  std::shared_ptr<DoubleArray> mid_next_arr_;
+  std::shared_ptr<DoubleArray> spread_arr_;
+  std::shared_ptr<DoubleArray> imb_arr_;
+  std::shared_ptr<DoubleArray> age_arr_;
+  std::shared_ptr<DoubleArray> last_move_arr_;
+  std::shared_ptr<DoubleArray> y_arr_;
+  std::shared_ptr<DoubleArray> tau_arr_;
+
+  void reset_batch();
+  bool load_next_nonempty_batch();
+};
+
+LabeledEventStream::LabeledEventStream(const std::string& events_path)
+    : path_(events_path) {
+  // Open parquet reader and fetch schema (RAII: reader_ owns file resource).
+  reader_ = open_parquet_reader(events_path, schema_);
+
+  // Look up required columns by name in the schema.
+  const int ts_idx        = schema_->GetFieldIndex("ts");
+  const int day_idx       = schema_->GetFieldIndex("date");
+  const int mid_idx       = schema_->GetFieldIndex("mid");
+  const int mid_next_idx  = schema_->GetFieldIndex("mid_next");
+  const int spread_idx    = schema_->GetFieldIndex("spread");
+  const int imb_idx       = schema_->GetFieldIndex("imbalance");
+  const int age_idx       = schema_->GetFieldIndex("age_diff_ms");
+  const int last_move_idx = schema_->GetFieldIndex("last_move");
+  const int y_idx         = schema_->GetFieldIndex("y");
+  const int tau_idx       = schema_->GetFieldIndex("tau_ms");
+
+  if (ts_idx < 0 || day_idx < 0 || mid_idx < 0 || mid_next_idx < 0 ||
+      spread_idx < 0 || imb_idx < 0 || age_idx < 0 ||
+      last_move_idx < 0 || y_idx < 0 || tau_idx < 0) {
+    throw std::runtime_error(
+        "Expected LabeledEvent columns not found in schema");
   }
 
-  std::string number_str;
-  while (pos < json.size()) {
-    char c = json[pos];
-    if ((c >= '0' && c <= '9') || c == '-' || c == '+' || c == '.' || c == 'e' ||
-        c == 'E') {
-      number_str.push_back(c);
-      ++pos;
-    } else {
-      break;
+  // Project only the columns we need, in a fixed order.
+  std::vector<int> col_indices = {
+      ts_idx, day_idx, mid_idx, mid_next_idx, spread_idx,
+      imb_idx, age_idx, last_move_idx, y_idx, tau_idx};
+
+  auto maybe_reader = reader_->GetRecordBatchReader(col_indices);
+  if (!maybe_reader.ok()) {
+    throw std::runtime_error(
+        "Failed to create RecordBatchReader for " + events_path + ": " +
+        maybe_reader.status().ToString());
+  }
+  batch_reader_ = std::move(maybe_reader).ValueOrDie();
+
+  // Prime the first non-empty batch (if any).
+  load_next_nonempty_batch();
+}
+
+void LabeledEventStream::reset_batch() {
+  batch_.reset();
+  row_index_ = 0;
+  row_count_ = 0;
+
+  ts_arr_.reset();
+  day_arr_.reset();
+  mid_arr_.reset();
+  mid_next_arr_.reset();
+  spread_arr_.reset();
+  imb_arr_.reset();
+  age_arr_.reset();
+  last_move_arr_.reset();
+  y_arr_.reset();
+  tau_arr_.reset();
+}
+
+bool LabeledEventStream::load_next_nonempty_batch() {
+  reset_batch();
+
+  while (true) {
+    std::shared_ptr<arrow::RecordBatch> next_batch;
+    auto st = batch_reader_->ReadNext(&next_batch);
+    if (!st.ok()) {
+      throw std::runtime_error("Error reading batch from " + path_ +
+                               ": " + st.ToString());
     }
-  }
 
-  if (number_str.empty()) {
-    return default_value;
-  }
+    if (!next_batch) {
+      // EOF
+      return false;
+    }
 
-  try {
-    return std::stod(number_str);
-  } catch (...) {
-    return default_value;
+    const int64_t n = next_batch->num_rows();
+    if (n == 0) {
+      // Skip empty batches.
+      continue;
+    }
+
+    batch_     = std::move(next_batch);
+    row_count_ = n;
+    row_index_ = 0;
+
+    // Columns come in the same order as col_indices in the constructor.
+    ts_arr_        = std::static_pointer_cast<UInt64Array>(batch_->column(0));
+    day_arr_       = std::static_pointer_cast<UInt32Array>(batch_->column(1));
+    mid_arr_       = std::static_pointer_cast<DoubleArray>(batch_->column(2));
+    mid_next_arr_  = std::static_pointer_cast<DoubleArray>(batch_->column(3));
+    spread_arr_    = std::static_pointer_cast<DoubleArray>(batch_->column(4));
+    imb_arr_       = std::static_pointer_cast<DoubleArray>(batch_->column(5));
+    age_arr_       = std::static_pointer_cast<DoubleArray>(batch_->column(6));
+    last_move_arr_ = std::static_pointer_cast<DoubleArray>(batch_->column(7));
+    y_arr_         = std::static_pointer_cast<DoubleArray>(batch_->column(8));
+    tau_arr_       = std::static_pointer_cast<DoubleArray>(batch_->column(9));
+    return true;
   }
 }
 
-inline std::string JoinPath(const std::string& a, const std::string& b) {
-  if (a.empty()) return b;
-  std::filesystem::path p(a);
-  p /= b;
-  return p.string();
+bool LabeledEventStream::next(LabeledEvent& ev) {
+  if (row_index_ >= row_count_) {
+    // Need a new batch; load_next_nonempty_batch may hit EOF.
+    if (!load_next_nonempty_batch()) {
+      return false;  // EOF
+    }
+  }
+
+  const int64_t i = row_index_++;
+
+  ev.ts          = ts_arr_->Value(i);
+  ev.day         = day_arr_->Value(i);
+  ev.mid         = mid_arr_->Value(i);
+  ev.mid_next    = mid_next_arr_->Value(i);
+  ev.spread      = spread_arr_->Value(i);
+  ev.imbalance   = imb_arr_->Value(i);
+  ev.age_diff_ms = age_arr_->Value(i);
+  ev.last_move   = last_move_arr_->Value(i);
+  ev.y           = y_arr_->Value(i);
+  ev.tau_ms      = tau_arr_->Value(i);
+
+  return true;
 }
 
 }  // namespace
 
-namespace nbbo {
+// ------------------------ HistogramEdgeStrategy ------------------------
 
-// ------------------------- StrategyConfig -------------------------
+HistogramEdgeStrategy::HistogramEdgeStrategy(const HistogramModel& hist,
+                                             StrategyConfig cfg)
+    : hist_(hist), cfg_(std::move(cfg)) {}
 
-StrategyConfig LoadStrategyConfig(const std::string& path) {
-  std::ifstream in(path);
-  if (!in) {
-    throw std::runtime_error("Failed to open strategy config: " + path);
-  }
-  std::ostringstream oss;
-  oss << in.rdbuf();
-  const std::string json = oss.str();
-
-  StrategyConfig cfg;
-  cfg.fee_price = ExtractDouble(json, "fee_price", cfg.fee_price);
-  cfg.slip_price = ExtractDouble(json, "slip_price", cfg.slip_price);
-  cfg.min_abs_direction_score =
-      ExtractDouble(json, "min_abs_direction_score", cfg.min_abs_direction_score);
-  cfg.min_expected_edge_bps =
-      ExtractDouble(json, "min_expected_edge_bps", cfg.min_expected_edge_bps);
-  cfg.max_mean_wait_ms =
-      ExtractDouble(json, "max_mean_wait_ms", cfg.max_mean_wait_ms);
-  return cfg;
-}
-
-// ------------------------- PnLAggregator -------------------------
-
-PnLAggregator::PnLAggregator(std::string trades_out_dir,
-                             std::string daily_out_dir)
-    : trades_out_dir_(std::move(trades_out_dir)),
-      daily_out_dir_(std::move(daily_out_dir)) {}
-
-void PnLAggregator::StartYear(uint32_t year) {
-  year_ = year;
-  trades_.clear();
-  daily_rows_.clear();
-  current_day_ = 0;
-  day_trade_count_ = 0;
-  day_gross_sum_ = 0.0;
-  day_net_sum_ = 0.0;
-  cumulative_net_ = 0.0;
-}
-
-void PnLAggregator::OnTrade(const TradeRecord& trade) {
-  if (trade.day == 0) return;
-
-  if (current_day_ == 0) {
-    current_day_ = trade.day;
-  } else if (trade.day != current_day_) {
-    FlushCurrentDay();
-    current_day_ = trade.day;
-  }
-
-  trades_.push_back(trade);
-
-  day_trade_count_++;
-  day_gross_sum_ += trade.gross_ret;
-  day_net_sum_ += trade.net_ret;
-  cumulative_net_ += trade.net_ret;
-}
-
-void PnLAggregator::FlushCurrentDay() {
-  if (current_day_ == 0 || day_trade_count_ == 0) {
-    // Nothing to flush (no trades for this day)
-    return;
-  }
-
-  DailyPnlRow row;
-  row.day = current_day_;
-  row.num_trades = day_trade_count_;
-  row.gross_ret_sum = day_gross_sum_;
-  row.net_ret_sum = day_net_sum_;
-  row.gross_ret_mean = day_gross_sum_ / static_cast<double>(day_trade_count_);
-  row.net_ret_mean = day_net_sum_ / static_cast<double>(day_trade_count_);
-  row.cumulative_net_ret = cumulative_net_;
-
-  daily_rows_.push_back(row);
-
-  day_trade_count_ = 0;
-  day_gross_sum_ = 0.0;
-  day_net_sum_ = 0.0;
-}
-
-void PnLAggregator::WriteTradesCsv() const {
-  std::filesystem::create_directories(trades_out_dir_);
-
-  std::ostringstream fname;
-  fname << "SPY_" << year_ << "_trades.csv";
-  const std::string path = JoinPath(trades_out_dir_, fname.str());
-
-  std::ofstream out(path);
-  if (!out) {
-    throw std::runtime_error("Failed to open trades output: " + path);
-  }
-
-  out << "ts_in,ts_out,day,mid_in,mid_out,spread_in,"
-         "direction_score,expected_edge_ret,cost_ret,gross_ret,net_ret,side\n";
-
-  out << std::setprecision(10);
-
-  for (const auto& t : trades_) {
-    out << t.ts_in << ',' << t.ts_out << ',' << t.day << ','
-        << t.mid_in << ',' << t.mid_out << ',' << t.spread_in << ','
-        << t.direction_score << ',' << t.expected_edge_ret << ','
-        << t.cost_ret << ',' << t.gross_ret << ',' << t.net_ret << ','
-        << t.side << '\n';
-  }
-}
-
-void PnLAggregator::WriteDailyCsv() const {
-  std::filesystem::create_directories(daily_out_dir_);
-
-  std::ostringstream fname;
-  fname << "SPY_" << year_ << "_daily.csv";
-  const std::string path = JoinPath(daily_out_dir_, fname.str());
-
-  std::ofstream out(path);
-  if (!out) {
-    throw std::runtime_error("Failed to open daily PnL output: " + path);
-  }
-
-  out << "day,num_trades,gross_ret_sum,net_ret_sum,"
-         "gross_ret_mean,net_ret_mean,cumulative_net_ret\n";
-
-  out << std::setprecision(10);
-
-  for (const auto& row : daily_rows_) {
-    out << row.day << ',' << row.num_trades << ','
-        << row.gross_ret_sum << ',' << row.net_ret_sum << ','
-        << row.gross_ret_mean << ',' << row.net_ret_mean << ','
-        << row.cumulative_net_ret << '\n';
-  }
-}
-
-void PnLAggregator::FinalizeYear() {
-  FlushCurrentDay();
-  if (year_ == 0) return;
-  WriteTradesCsv();
-  WriteDailyCsv();
-}
-
-// ------------------------- Backtester -------------------------
-
-Backtester::Backtester(const HistogramModel& hist,
-                       const StrategyConfig& cfg,
-                       std::string trades_out_dir,
-                       std::string daily_out_dir)
-    : hist_(hist),
-      cfg_(cfg),
-      pnl_(std::move(trades_out_dir), std::move(daily_out_dir)) {}
-
-void Backtester::RunForYear(uint32_t year, const std::string& events_path) {
-  // Read full per-event table into memory using Arrow/Parquet.
-  std::shared_ptr<arrow::Schema> schema;
-  std::unique_ptr<parquet::arrow::FileReader> reader =
-    nbbo::open_parquet_reader(events_path, schema);
-    
-  std::shared_ptr<arrow::Table> table;
-  {
-  auto st = reader->ReadTable(&table);
-  if (!st.ok()) {
-      throw std::runtime_error("Failed to read events table from " + events_path +
-                              ": " + st.ToString());
-  }
-  }
-
-  auto combined_result = table->CombineChunks(arrow::default_memory_pool());
-  if (!combined_result.ok()) {
-  throw std::runtime_error("Failed to combine chunks for " + events_path +
-                          ": " + combined_result.status().ToString());
-  }
-  std::shared_ptr<arrow::Table> combined = combined_result.ValueOrDie();
-
-  const int ts_idx = schema->GetFieldIndex("ts");
-  const int day_idx = schema->GetFieldIndex("date");
-  const int mid_idx = schema->GetFieldIndex("mid");
-  const int mid_next_idx = schema->GetFieldIndex("mid_next");
-  const int spread_idx = schema->GetFieldIndex("spread");
-  const int imb_idx = schema->GetFieldIndex("imbalance");
-  const int age_idx = schema->GetFieldIndex("age_diff_ms");
-  const int last_move_idx = schema->GetFieldIndex("last_move");
-  const int y_idx = schema->GetFieldIndex("y");
-  const int tau_idx = schema->GetFieldIndex("tau_ms");
-
-  if (ts_idx < 0 || day_idx < 0 || mid_idx < 0 || mid_next_idx < 0 ||
-      spread_idx < 0 || imb_idx < 0 || age_idx < 0 || last_move_idx < 0 ||
-      y_idx < 0 || tau_idx < 0) {
-    throw std::runtime_error("Expected LabeledEvent columns not found in schema");
-  }
-
-  auto ts_arr =
-      std::static_pointer_cast<arrow::UInt64Array>(combined->column(ts_idx)->chunk(0));
-  auto day_arr =
-      std::static_pointer_cast<arrow::UInt32Array>(combined->column(day_idx)->chunk(0));
-  auto mid_arr =
-      std::static_pointer_cast<arrow::DoubleArray>(combined->column(mid_idx)->chunk(0));
-  auto mid_next_arr = std::static_pointer_cast<arrow::DoubleArray>(
-      combined->column(mid_next_idx)->chunk(0));
-  auto spread_arr = std::static_pointer_cast<arrow::DoubleArray>(
-      combined->column(spread_idx)->chunk(0));
-  auto imb_arr =
-      std::static_pointer_cast<arrow::DoubleArray>(combined->column(imb_idx)->chunk(0));
-  auto age_arr =
-      std::static_pointer_cast<arrow::DoubleArray>(combined->column(age_idx)->chunk(0));
-  auto last_move_arr = std::static_pointer_cast<arrow::DoubleArray>(
-      combined->column(last_move_idx)->chunk(0));
-  auto y_arr =
-      std::static_pointer_cast<arrow::DoubleArray>(combined->column(y_idx)->chunk(0));
-  auto tau_arr =
-      std::static_pointer_cast<arrow::DoubleArray>(combined->column(tau_idx)->chunk(0));
-
-  const int64_t n = combined->num_rows();
-  std::vector<nbbo::LabeledEvent> events;
-  events.reserve(static_cast<std::size_t>(n));
-
-  for (int64_t i = 0; i < n; ++i) {
-    nbbo::LabeledEvent e{};
-    e.ts = ts_arr->Value(i);
-    e.day = day_arr->Value(i);
-    e.mid = mid_arr->Value(i);
-    e.mid_next = mid_next_arr->Value(i);
-    e.spread = spread_arr->Value(i);
-    e.imbalance = imb_arr->Value(i);
-    e.age_diff_ms = age_arr->Value(i);
-    e.last_move = last_move_arr->Value(i);
-    e.y = y_arr->Value(i);
-    e.tau_ms = tau_arr->Value(i);
-    events.push_back(e);
-  }
-
-  pnl_.StartYear(year);
-
-  for (std::size_t i = 0; i + 1 < events.size(); ++i) {
-    const nbbo::LabeledEvent& ev = events[i];
-    const nbbo::LabeledEvent& next = events[i + 1];
-
-    const nbbo::LabeledEvent* next_ptr =
-        (next.day == ev.day) ? &next : nullptr;
-    ProcessEvent(ev, next_ptr);
-  }
-
-  // The very last event of the year cannot open a new trade sensibly.
-  pnl_.FinalizeYear();
-}
-
-void Backtester::ProcessEvent(const nbbo::LabeledEvent& ev,
-                              const nbbo::LabeledEvent* next_event) {
+std::optional<TradeRecord> HistogramEdgeStrategy::OnEvent(
+    const LabeledEvent& ev, const LabeledEvent* next_event) {
+  // If there's no next event on the same day, we don't open a trade.
   if (!next_event) {
-    return;
+    return std::nullopt;
   }
 
+  // Guard against bad data.
   if (ev.mid <= 0.0 || ev.spread <= 0.0) {
-    return;
+    return std::nullopt;
   }
 
+  // Build tick state for histogram lookup.
   TickState state{};
   state.imbalance   = ev.imbalance;
   state.spread      = ev.spread;
   state.age_diff_ms = ev.age_diff_ms;
   state.last_move   = ev.last_move;
 
+  // D(k): histogram-based direction score (signed).
   const double direction_score = hist_.direction_score(state);
 
-  if (std::abs(direction_score) < cfg_.min_abs_direction_score) {
-    return;
+  // Filter on direction score magnitude if requested.
+  if (cfg_.min_abs_direction_score > 0.0 &&
+      std::abs(direction_score) < cfg_.min_abs_direction_score) {
+    return std::nullopt;
   }
 
+  // Expected edge from histogram, in return space per $1 notional.
+  // We approximate a one-tick mid move as spread / 2.
   const double delta_m = 0.5 * ev.spread;
-  const double expected_edge_ret = direction_score * (delta_m / ev.mid);
+  const double expected_edge_ret =
+      direction_score * (delta_m / ev.mid);
 
-  // const double c_spread = ev.spread / ev.mid;
-  // const double c_fee = 2.0 * cfg_.fee_price / ev.mid;
-  // const double c_slip = cfg_.slip_price / ev.mid;
-  // const double cost_ret = c_spread + c_fee + c_slip;
+  // Costs, initialized to zero so Legacy mode can keep them off.
+  double c_spread = 0.0;
+  double c_fee    = 0.0;
+  double c_slip   = 0.0;
+  double cost_ret = 0.0;
 
-  const double c_spread = 0.0;
-  const double c_fee    = 0.0;
-  const double c_slip   = 0.0;
-  const double cost_ret = 0.0;
+  // Shared cost computation for the “cost on” modes.
+  auto compute_costs = [&] {
+    c_spread = ev.spread / ev.mid;
+    c_fee    = 2.0 * cfg_.fee_price / ev.mid;  // in/out legs
+    c_slip   = cfg_.slip_price / ev.mid;
+    cost_ret = c_spread + c_fee + c_slip;
+  };
 
-  // const double margin_ret = cfg_.min_expected_edge_bps * 1e-4;
-  // if (expected_edge_ret <= cost_ret + margin_ret) {
-  //   return;
-  // }
+  // -------- EDGE-MODE SWITCH --------
+  switch (cfg_.edge_mode) {
+    case EdgeMode::Legacy: {
+      // Costs remain zero; gate on signed expected edge.
+      if (expected_edge_ret <= 0.0) {
+        return std::nullopt;
+      }
+      break;
+    }
 
-  const double margin_ret = 0.0;
-  if (expected_edge_ret <= 0.0) {
-    return;
+    case EdgeMode::CostTradeAll: {
+      // Turn on realistic costs; no extra EE gate beyond direction filter.
+      compute_costs();
+      break;
+    }
+
+    case EdgeMode::CostWithGate: {
+      // Turn on realistic costs.
+      compute_costs();
+
+      if (cfg_.min_expected_edge_bps > 0.0) {
+        const double margin_ret =
+            cfg_.min_expected_edge_bps * 1e-4;  // bps -> return
+        const double cost_ret_gate = c_fee + c_slip;
+        const double edge_ret_mag  = std::abs(expected_edge_ret);
+
+        if (edge_ret_mag <= cost_ret_gate + margin_ret) {
+          return std::nullopt;
+        }
+      }
+      break;
+    }
+
+    default:
+      throw std::logic_error(
+          "Unknown EdgeMode in HistogramEdgeStrategy::OnEvent");
   }
 
+  // Optional wait-time filter from histogram: if expected time to
+  // realize the move is too long, we skip the trade.
   if (cfg_.max_mean_wait_ms > 0.0) {
     const double mean_tau = hist_.mean_tau_ms(state);
     if (mean_tau > cfg_.max_mean_wait_ms) {
-      return;
+      return std::nullopt;
     }
   }
 
+  // Trade direction from sign of signal.
   const int side = (direction_score > 0.0) ? +1 : -1;
 
+  // Realized price move over one step, converted to return.
   const double gross_ret =
       side * ((next_event->mid - ev.mid) / ev.mid);
+
+  // Net return after applying all costs in return space.
   const double net_ret = gross_ret - cost_ret;
 
-  TradeRecord trade;
-  trade.ts_in = ev.ts;
-  trade.ts_out = next_event->ts;
-  trade.day = ev.day;
-  trade.mid_in = ev.mid;
-  trade.mid_out = next_event->mid;
-  trade.spread_in = ev.spread;
-  trade.direction_score = direction_score;
+  // Fill TradeRecord for downstream CSV aggregation.
+  TradeRecord trade{};
+  trade.ts_in             = ev.ts;
+  trade.ts_out            = next_event->ts;
+  trade.day               = ev.day;
+  trade.mid_in            = ev.mid;
+  trade.mid_out           = next_event->mid;
+  trade.spread_in         = ev.spread;
+  trade.direction_score   = direction_score;
   trade.expected_edge_ret = expected_edge_ret;
-  trade.cost_ret = cost_ret;
-  trade.gross_ret = gross_ret;
-  trade.net_ret = net_ret;
-  trade.side = side;
+  trade.cost_ret          = cost_ret;
+  trade.gross_ret         = gross_ret;
+  trade.net_ret           = net_ret;
+  trade.side              = side;
 
-  pnl_.OnTrade(trade);
+  return trade;
 }
+
+// ------------------------------ Backtester ------------------------------
+
+// Template ctor: construct the strategy in-place by value.
+template <StrategyLike S>
+Backtester<S>::Backtester(const HistogramModel& hist,
+                          const StrategyConfig& cfg,
+                          std::string trades_out_dir,
+                          std::string daily_out_dir)
+    : strategy_(hist, cfg),
+      pnl_(std::move(trades_out_dir), std::move(daily_out_dir)) {}
+
+template <StrategyLike S>
+void Backtester<S>::RunForYear(uint32_t year,
+                               const std::string& events_path) {
+  pnl_.StartYear(year);
+
+  // RAII stream that owns the Arrow reader + record-batch reader.
+  LabeledEventStream stream(events_path);
+
+  LabeledEvent prev_ev{};
+  LabeledEvent ev{};
+  bool has_prev = false;
+
+  while (stream.next(ev)) {
+    // For each pair (prev_ev, ev) on the same day, treat ev as "next_event".
+    if (has_prev) {
+      const LabeledEvent* next_ptr =
+          (ev.day == prev_ev.day) ? &ev : nullptr;
+      ProcessEvent(prev_ev, next_ptr);
+    }
+
+    prev_ev = ev;
+    has_prev = true;
+  }
+
+  // Last event of the year doesn't open a new trade (no "next" event).
+  pnl_.FinalizeYear();
+}
+
+template <StrategyLike S>
+void Backtester<S>::ProcessEvent(const LabeledEvent& ev,
+                                 const LabeledEvent* next_event) {
+  // Delegate the trading decision to the strategy.
+  std::optional<TradeRecord> maybe_trade =
+      strategy_.OnEvent(ev, next_event);
+  if (maybe_trade) {
+    pnl_.OnTrade(*maybe_trade);
+  }
+}
+
+// Explicit instantiation for the concrete strategy we use in this binary.
+template class Backtester<HistogramEdgeStrategy>;
 
 }  // namespace nbbo

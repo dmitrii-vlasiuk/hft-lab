@@ -1,3 +1,8 @@
+// histogram_builder.cpp
+//
+// Builds a 4D histogram over tick state (imbalance, spread, age_diff_ms, last_move) from
+// Parquet event data across a year range and writes it out as a JSON model.
+
 #include "nbbo/histogram_builder.hpp"
 
 #include <arrow/api.h>
