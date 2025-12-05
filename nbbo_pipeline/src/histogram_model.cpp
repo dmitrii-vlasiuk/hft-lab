@@ -1,4 +1,7 @@
-
+// histogram_model.cpp
+//
+// Implements HistogramModel, a binned, non-parametric model of short-horizon
+// price dynamics conditioned on LOB state.
 
 #include "nbbo/histogram_model.hpp"
 

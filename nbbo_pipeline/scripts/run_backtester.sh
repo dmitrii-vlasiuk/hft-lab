@@ -10,7 +10,7 @@ BIN="${ROOT_DIR}/nbbo_pipeline/build/run_backtester"
 
 EVENTS_DIR="${ROOT_DIR}/data/research/events"
 HIST_PATH="${ROOT_DIR}/data/research/hist/SPY_histogram.json"
-CFG_PATH="${ROOT_DIR}/config/strategy_params.json"
+CFG_PATH="${ROOT_DIR}/nbbo_pipeline/config/strategy_params.json"
 
 START_YEAR="${1:-2018}"
 END_YEAR="${2:-2023}"
