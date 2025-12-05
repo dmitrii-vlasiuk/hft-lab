@@ -17,9 +17,11 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <chrono>  // added for wall-clock timing
 
 #include "nbbo/arrow_utils.hpp"
 #include "nbbo/histogram_bins.hpp"
+#include "nbbo/timing.hpp"
 
 using nlohmann::json;
 
@@ -43,6 +45,11 @@ HistogramBuilder::HistogramBuilder(const HistogramConfig& cfg) : cfg_(cfg) {
 }
 
 void HistogramBuilder::run() {
+  using Clock = std::chrono::steady_clock;
+  const auto start = Clock::now();
+
+  NBBO_SCOPE_TIMER("HistogramBuilder::run");
+
   if (cfg_.year_hi < cfg_.year_lo) {
     throw std::runtime_error("HistogramBuilder: year_hi < year_lo");
   }
@@ -59,9 +66,30 @@ void HistogramBuilder::run() {
   }
 
   finalize_and_write_json();
+
+  // Wall-clock timing for the whole run.
+  const auto end = Clock::now();
+  nbbo::TimingRegistry::Instance().Add("HistogramBuilder::wall_clock",
+                                       end - start);
+
+  // Build a small "args" vector for the report.
+  std::vector<std::string> args;
+  args.emplace_back("symbol=" + cfg_.symbol);
+  args.emplace_back("years=" + std::to_string(cfg_.year_lo) + "-" +
+                    std::to_string(cfg_.year_hi));
+  args.emplace_back("events_root=" + cfg_.events_root);
+  args.emplace_back("out=" + cfg_.out_path);
+
+  // Append this run's timings into the shared timing log.
+  const std::string timing_path = "data/research/profile/timing_log.txt";
+  nbbo::WriteTimingReport(timing_path, "HistogramBuilder::run", args);
 }
 
 void HistogramBuilder::accumulate_year(int year) {
+  const std::string timer_label =
+      "HistogramBuilder::accumulate_year_" + std::to_string(year);
+  NBBO_SCOPE_TIMER(timer_label);
+
   fs::path in_path =
       fs::path(cfg_.events_root) /
       (cfg_.symbol + "_" + std::to_string(year) + "_events.parquet");
@@ -107,6 +135,8 @@ void HistogramBuilder::accumulate_year(int year) {
 
 void HistogramBuilder::accumulate_batch(
     const std::shared_ptr<arrow::RecordBatch>& batch) {
+  NBBO_SCOPE_TIMER("HistogramBuilder::accumulate_batch");
+
   auto imb_arr = batch->GetColumnByName("imbalance");
   auto spr_arr = batch->GetColumnByName("spread");
   auto age_arr = batch->GetColumnByName("age_diff_ms");
@@ -150,6 +180,8 @@ void HistogramBuilder::accumulate_batch(
 }
 
 void HistogramBuilder::finalize_and_write_json() const {
+  NBBO_SCOPE_TIMER("HistogramBuilder::finalize_and_write_json");
+
   fs::path out_path(cfg_.out_path);
   if (!out_path.parent_path().empty()) {
     try {

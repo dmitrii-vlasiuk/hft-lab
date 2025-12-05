@@ -7,6 +7,9 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <chrono>
+
+#include "nbbo/timing.hpp"
 
 // Simple helper to expand years from CLI arguments.
 //
@@ -111,6 +114,8 @@ struct YearStats {
 // Expects file at: <trades_dir>/SPY_<year>_trades.csv
 // Skips malformed lines; exits if file can't be opened.
 static YearStats summarize_year(const std::string& trades_dir, int year) {
+  NBBO_SCOPE_TIMER("summarize_trades::summarize_year_" + std::to_string(year));
+
   YearStats stats;
   std::ostringstream fname;
   fname << "SPY_" << year << "_trades.csv";
@@ -168,43 +173,57 @@ static YearStats summarize_year(const std::string& trades_dir, int year) {
 }
 
 int main(int argc, char** argv) {
+  using Clock = std::chrono::steady_clock;
+  const auto program_start = Clock::now();
+
   // CLI:
-  //   summarize_yearly_pnl <trades_dir> <years...>
+  //   summarize_trades <trades_dir> <out_file> <years...>
   //
   // Examples:
-  //   summarize_yearly_pnl data/research/trades 2018-2023
-  //   summarize_yearly_pnl data/research/trades 2018 2019 2020
-  if (argc < 3) {
+  //   summarize_trades data/research/trades out/summary.txt 2018-2023
+  //   summarize_trades data/research/trades out/summary.txt 2018 2019 2020
+  if (argc < 4) {
     std::cerr << "Usage: " << argv[0]
-              << " <trades_dir> <years...>\n\n"
+              << " <trades_dir> <out_file> <years...>\n\n"
               << "Examples:\n"
               << "  " << argv[0]
-              << " data/research/trades 2018-2023\n"
+              << " data/research/trades data/research/summary/yearly_pnl.txt 2018-2023\n"
               << "  " << argv[0]
-              << " data/research/trades 2018 2019 2020\n";
+              << " data/research/trades data/research/summary/yearly_pnl.txt 2018 2019 2020\n";
     return 1;
   }
 
-  std::string trades_dir = argv[1];
-  // Parse all remaining args into a sorted, deduped list of years
-  std::vector<int> years = expand_years(argc, argv, 2);
+  NBBO_SCOPE_TIMER("summarize_trades_main");
 
-  std::cout << "Using trades directory: " << trades_dir << "\n";
-  std::cout << "Years: ";
-  for (std::size_t i = 0; i < years.size(); ++i) {
-    if (i) std::cout << ", ";
-    std::cout << years[i];
+  std::string trades_dir = argv[1];
+  std::string out_path   = argv[2];
+
+  // Parse all remaining args into a sorted, deduped list of years
+  std::vector<int> years = expand_years(argc, argv, 3);
+
+  // Open output file
+  std::ofstream out(out_path);
+  if (!out) {
+    std::cerr << "Failed to open output file: " << out_path << "\n";
+    return 1;
   }
-  std::cout << "\n\n";
 
   // Global formatting: default to 8 decimal places for returns
-  std::cout << std::fixed << std::setprecision(8);
+  out << std::fixed << std::setprecision(8);
+
+  out << "Using trades directory: " << trades_dir << "\n";
+  out << "Years: ";
+  for (std::size_t i = 0; i < years.size(); ++i) {
+    if (i) out << ", ";
+    out << years[i];
+  }
+  out << "\n\n";
 
   std::string header =
       "  Year   Total Net Ret   Total Net Ret (bps)    # Trades   Win%   Loss%  "
       "Avg Win    Avg Loss     Max Gain     Max Loss";
-  std::cout << header << "\n";
-  std::cout << std::string(header.size(), '-') << "\n";
+  out << header << "\n";
+  out << std::string(header.size(), '-') << "\n";
 
   for (int y : years) {
     YearStats stats = summarize_year(trades_dir, y);
@@ -235,19 +254,33 @@ int main(int argc, char** argv) {
 
     // Note: we temporarily change precision to pretty-print each column,
     // then reset it back to 8 at the end of the line.
-    std::cout << std::setw(6) << y << "  "
-              << std::setw(15) << total_net << "  "
-              << std::setw(20) << total_net_bps << "  "
-              << std::setw(10) << stats.num_trades << "  "
-              << std::setw(6) << std::setprecision(2) << win_pct << "  "
-              << std::setw(6) << std::setprecision(2) << loss_pct << "  "
-              << std::setw(8) << std::setprecision(6) << avg_win << "  "
-              << std::setw(10) << std::setprecision(6) << avg_loss << "  "
-              << std::setw(10) << std::setprecision(6) << max_gain << "  "
-              << std::setw(10) << std::setprecision(6) << max_loss
-              << std::setprecision(8)  // reset precision for the next row
-              << "\n";
+    out << std::setw(6) << y << "  "
+        << std::setw(15) << total_net << "  "
+        << std::setw(20) << total_net_bps << "  "
+        << std::setw(10) << stats.num_trades << "  "
+        << std::setw(6) << std::setprecision(2) << win_pct << "  "
+        << std::setw(6) << std::setprecision(2) << loss_pct << "  "
+        << std::setw(8) << std::setprecision(6) << avg_win << "  "
+        << std::setw(10) << std::setprecision(6) << avg_loss << "  "
+        << std::setw(10) << std::setprecision(6) << max_gain << "  "
+        << std::setw(10) << std::setprecision(6) << max_loss
+        << std::setprecision(8)  // reset precision for the next row
+        << "\n";
   }
+
+  // Program wall-clock timing + append to shared timing log.
+  const auto program_end = Clock::now();
+  nbbo::TimingRegistry::Instance().Add("program_wall_clock",
+                                       program_end - program_start);
+
+  std::vector<std::string> args;
+  args.reserve(static_cast<std::size_t>(argc > 1 ? argc - 1 : 0));
+  for (int i = 1; i < argc; ++i) {
+    args.emplace_back(argv[i]);
+  }
+
+  const std::string timing_path = "data/research/profile/timing_log.txt";
+  nbbo::WriteTimingReport(timing_path, argv[0], args);
 
   return 0;
 }

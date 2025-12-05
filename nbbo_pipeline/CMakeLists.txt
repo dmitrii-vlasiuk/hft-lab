@@ -50,6 +50,20 @@ target_link_libraries(nbbo_core
 
 target_compile_features(nbbo_core INTERFACE cxx_std_23)
 
+# ----------------------------------------------------------------------
+# Timing library
+# ----------------------------------------------------------------------
+add_library(nbbo_timing
+  src/timing.cpp
+)
+
+target_link_libraries(nbbo_timing
+  PUBLIC
+    nbbo_core
+)
+
+target_compile_features(nbbo_timing PUBLIC cxx_std_23)
+
 # ------------------------------------------------------------------------------
 # Helper to define nbbo tools
 # ------------------------------------------------------------------------------
@@ -60,6 +74,7 @@ function(add_nbbo_tool name)
   target_link_libraries(${name}
     PRIVATE
       nbbo_core
+      nbbo_timing
       ZLIB::ZLIB
       Threads::Threads
   )
