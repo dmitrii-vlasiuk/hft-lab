@@ -10,12 +10,6 @@ THRESHOLD_NEXT="1.0"
 
 mkdir -p "$OUT_DIR"
 
-# "$BIN" \
-#     --in "$IN_DIR/SPY_2020.parquet" \
-#     --out "$OUT_DIR/SPY_2020_events.parquet" \
-#     --threshold-next 1.0
-
-
 declare -a YEARS=("2018" "2019" "2020" "2021" "2022" "2023")
 
 for Y in "${YEARS[@]}"; do
