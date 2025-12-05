@@ -10,11 +10,14 @@
 #include <fstream>
 #include <limits>
 #include <nlohmann/json.hpp>
+#include <ranges>
 #include <stdexcept>
 
 #include "nbbo/histogram_bins.hpp"
 
 using nlohmann::json;
+namespace rng = std::ranges;
+namespace vw  = std::views;
 
 HistogramModel::HistogramModel() : bins(make_default_histogram_bins()) {}
 
@@ -45,15 +48,15 @@ HistogramModel::HistogramModel(const std::string& json_path)
     throw std::runtime_error("Histogram JSON cells.size() != N_CELLS");
   }
 
-  for (int k = 0; k < N_CELLS; ++k) {
+  rng::for_each(vw::iota(0, N_CELLS), [&](int k) {
     const auto& cj = jcells[k];
     CellStats cs;
-    cs.n = cj.value("n", static_cast<std::uint64_t>(0));
-    cs.n_up = cj.value("n_up", static_cast<std::uint64_t>(0));
-    cs.n_down = cj.value("n_down", static_cast<std::uint64_t>(0));
+    cs.n          = cj.value("n",      static_cast<std::uint64_t>(0));
+    cs.n_up       = cj.value("n_up",   static_cast<std::uint64_t>(0));
+    cs.n_down     = cj.value("n_down", static_cast<std::uint64_t>(0));
     cs.sum_tau_ms = cj.value("sum_tau_ms", 0.0);
-    cells[k] = cs;
-  }
+    cells[k]      = cs;
+  });
 }
 
 int HistogramModel::imb_bin(double I) const {
@@ -61,11 +64,17 @@ int HistogramModel::imb_bin(double I) const {
   if (I < -1.0) I = -1.0;
   if (I > 1.0) I = 1.0;
 
-  for (int b = 0; b < N_IMB; ++b) {
+  auto idxs = vw::iota(0, N_IMB);
+
+  auto it = rng::find_if(idxs, [&](int b) {
     const auto& bin = bins.imb[b];
     bool ok_lo = bin.lo_inclusive ? I >= bin.lo : I > bin.lo;
     bool ok_hi = bin.hi_inclusive ? I <= bin.hi : I < bin.hi;
-    if (ok_lo && ok_hi) return b;
+    return ok_lo && ok_hi;
+  });
+
+  if (it != rng::end(idxs)) {
+    return *it;
   }
   return N_IMB - 1;
 }
@@ -80,18 +89,27 @@ int HistogramModel::spr_bin(double spread) const {
   }
 
   int k = static_cast<int>(std::llround(spread / delta));
-  for (int b = 0; b < N_SPR; ++b) {
+
+  auto idxs = vw::iota(0, N_SPR);
+
+  auto it = rng::find_if(idxs, [&](int b) {
     const auto& bin = bins.spr[b];
-    if (k < bin.ticks_min) continue;
-    if (!bin.max_is_inf && k > bin.ticks_max) continue;
-    return b;
+    if (k < bin.ticks_min) return false;
+    if (!bin.max_is_inf && k > bin.ticks_max) return false;
+    return true;
+  });
+
+  if (it != rng::end(idxs)) {
+    return *it;
   }
   return N_SPR - 1;
 }
 
 int HistogramModel::age_bin(double age_diff_ms) const {
   // age_diff_ms = Age(bid) - Age(ask)
-  for (int b = 0; b < N_AGE; ++b) {
+  auto idxs = vw::iota(0, N_AGE);
+
+  auto it = rng::find_if(idxs, [&](int b) {
     const auto& bin = bins.age[b];
     bool ok_lo = bin.lo_is_inf ? true
                                : (bin.lo_inclusive ? age_diff_ms >= bin.lo
@@ -99,7 +117,11 @@ int HistogramModel::age_bin(double age_diff_ms) const {
     bool ok_hi = bin.hi_is_inf ? true
                                : (bin.hi_inclusive ? age_diff_ms <= bin.hi
                                                    : age_diff_ms < bin.hi);
-    if (ok_lo && ok_hi) return b;
+    return ok_lo && ok_hi;
+  });
+
+  if (it != rng::end(idxs)) {
+    return *it;
   }
   return N_AGE - 1;
 }
