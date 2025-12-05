@@ -12,7 +12,179 @@
 #include "nbbo/arrow_utils.hpp"
 
 namespace nbbo {
+  namespace {
 
+    using UInt64Array = arrow::UInt64Array;
+    using UInt32Array = arrow::UInt32Array;
+    using DoubleArray = arrow::DoubleArray;
+
+    // A small RAII wrapper that streams LabeledEvent rows from a Parquet file.
+    //
+    // Invariants:
+    //  - Constructor verifies the schema has the expected columns and projects
+    //    only those columns.
+    //  - next(ev) returns true and fully-populates ev, or returns false at EOF.
+    class LabeledEventStream {
+    public:
+      explicit LabeledEventStream(const std::string& events_path);
+
+      // Fill ev with the next row; return false on EOF.
+      bool next(LabeledEvent& ev);
+
+    private:
+      std::string path_;
+
+      std::shared_ptr<arrow::Schema> schema_;
+      std::unique_ptr<parquet::arrow::FileReader> reader_;
+      std::unique_ptr<arrow::RecordBatchReader> batch_reader_;
+
+      std::shared_ptr<arrow::RecordBatch> batch_;
+      int64_t row_index_ = 0;
+      int64_t row_count_ = 0;
+
+      // Column views for the current batch (projected in a fixed order).
+      std::shared_ptr<UInt64Array> ts_arr_;
+      std::shared_ptr<UInt32Array> day_arr_;
+      std::shared_ptr<DoubleArray> mid_arr_;
+      std::shared_ptr<DoubleArray> mid_next_arr_;
+      std::shared_ptr<DoubleArray> spread_arr_;
+      std::shared_ptr<DoubleArray> imb_arr_;
+      std::shared_ptr<DoubleArray> age_arr_;
+      std::shared_ptr<DoubleArray> last_move_arr_;
+      std::shared_ptr<DoubleArray> y_arr_;
+      std::shared_ptr<DoubleArray> tau_arr_;
+
+      void reset_batch();
+      bool load_next_nonempty_batch();
+    };
+
+    LabeledEventStream::LabeledEventStream(const std::string& events_path)
+        : path_(events_path) {
+      // Open parquet reader and fetch schema (RAII: reader_ owns file resource).
+      reader_ = open_parquet_reader(events_path, schema_);
+
+      // Look up required columns by name in the schema.
+      const int ts_idx        = schema_->GetFieldIndex("ts");
+      const int day_idx       = schema_->GetFieldIndex("date");
+      const int mid_idx       = schema_->GetFieldIndex("mid");
+      const int mid_next_idx  = schema_->GetFieldIndex("mid_next");
+      const int spread_idx    = schema_->GetFieldIndex("spread");
+      const int imb_idx       = schema_->GetFieldIndex("imbalance");
+      const int age_idx       = schema_->GetFieldIndex("age_diff_ms");
+      const int last_move_idx = schema_->GetFieldIndex("last_move");
+      const int y_idx         = schema_->GetFieldIndex("y");
+      const int tau_idx       = schema_->GetFieldIndex("tau_ms");
+
+      if (ts_idx < 0 || day_idx < 0 || mid_idx < 0 || mid_next_idx < 0 ||
+          spread_idx < 0 || imb_idx < 0 || age_idx < 0 ||
+          last_move_idx < 0 || y_idx < 0 || tau_idx < 0) {
+        throw std::runtime_error(
+            "Expected LabeledEvent columns not found in schema");
+      }
+
+      // Project only the columns we need, in a fixed order.
+      std::vector<int> col_indices = {
+          ts_idx, day_idx, mid_idx, mid_next_idx, spread_idx,
+          imb_idx, age_idx, last_move_idx, y_idx, tau_idx};
+
+      auto maybe_reader = reader_->GetRecordBatchReader(col_indices);
+      if (!maybe_reader.ok()) {
+        throw std::runtime_error(
+            "Failed to create RecordBatchReader for " + events_path + ": " +
+            maybe_reader.status().ToString());
+      }
+      batch_reader_ = std::move(maybe_reader).ValueOrDie();
+
+      // Prime the first non-empty batch (if any).
+      load_next_nonempty_batch();
+    }
+
+    void LabeledEventStream::reset_batch() {
+      batch_.reset();
+      row_index_ = 0;
+      row_count_ = 0;
+
+      ts_arr_.reset();
+      day_arr_.reset();
+      mid_arr_.reset();
+      mid_next_arr_.reset();
+      spread_arr_.reset();
+      imb_arr_.reset();
+      age_arr_.reset();
+      last_move_arr_.reset();
+      y_arr_.reset();
+      tau_arr_.reset();
+    }
+
+    bool LabeledEventStream::load_next_nonempty_batch() {
+      reset_batch();
+
+      while (true) {
+        std::shared_ptr<arrow::RecordBatch> next_batch;
+        auto st = batch_reader_->ReadNext(&next_batch);
+        if (!st.ok()) {
+          throw std::runtime_error("Error reading batch from " + path_ +
+                                   ": " + st.ToString());
+        }
+
+        if (!next_batch) {
+          // EOF
+          return false;
+        }
+
+        const int64_t n = next_batch->num_rows();
+        if (n == 0) {
+          // Skip empty batches.
+          continue;
+        }
+
+        batch_     = std::move(next_batch);
+        row_count_ = n;
+        row_index_ = 0;
+
+        // Columns come in the same order as col_indices in the constructor.
+        ts_arr_        = std::static_pointer_cast<UInt64Array>(batch_->column(0));
+        day_arr_       = std::static_pointer_cast<UInt32Array>(batch_->column(1));
+        mid_arr_       = std::static_pointer_cast<DoubleArray>(batch_->column(2));
+        mid_next_arr_  = std::static_pointer_cast<DoubleArray>(batch_->column(3));
+        spread_arr_    = std::static_pointer_cast<DoubleArray>(batch_->column(4));
+        imb_arr_       = std::static_pointer_cast<DoubleArray>(batch_->column(5));
+        age_arr_       = std::static_pointer_cast<DoubleArray>(batch_->column(6));
+        last_move_arr_ = std::static_pointer_cast<DoubleArray>(batch_->column(7));
+        y_arr_         = std::static_pointer_cast<DoubleArray>(batch_->column(8));
+        tau_arr_       = std::static_pointer_cast<DoubleArray>(batch_->column(9));
+        return true;
+      }
+    }
+
+    bool LabeledEventStream::next(LabeledEvent& ev) {
+      if (row_index_ >= row_count_) {
+        // Need a new batch; load_next_nonempty_batch may hit EOF.
+        if (!load_next_nonempty_batch()) {
+          return false;  // EOF
+        }
+      }
+
+      const int64_t i = row_index_++;
+
+      ev.ts          = ts_arr_->Value(i);
+      ev.day         = day_arr_->Value(i);
+      ev.mid         = mid_arr_->Value(i);
+      ev.mid_next    = mid_next_arr_->Value(i);
+      ev.spread      = spread_arr_->Value(i);
+      ev.imbalance   = imb_arr_->Value(i);
+      ev.age_diff_ms = age_arr_->Value(i);
+      ev.last_move   = last_move_arr_->Value(i);
+      ev.y           = y_arr_->Value(i);
+      ev.tau_ms      = tau_arr_->Value(i);
+
+      return true;
+    }
+
+  }  // namespace
+}
+
+namespace nbbo {
   // ------------------------- Backtester -------------------------
   //
   // Backtester:
@@ -41,118 +213,32 @@ namespace nbbo {
         pnl_(std::move(trades_out_dir), std::move(daily_out_dir)) {}
 
   void Backtester::RunForYear(uint32_t year,
-                              const std::string& events_path) {
-    // Open Parquet reader and schema
-    std::shared_ptr<arrow::Schema> schema;
-    std::unique_ptr<parquet::arrow::FileReader> reader =
-        nbbo::open_parquet_reader(events_path, schema);
-
-    // Look up required columns by name in the schema.
-    const int ts_idx        = schema->GetFieldIndex("ts");
-    const int day_idx       = schema->GetFieldIndex("date");
-    const int mid_idx       = schema->GetFieldIndex("mid");
-    const int mid_next_idx  = schema->GetFieldIndex("mid_next");
-    const int spread_idx    = schema->GetFieldIndex("spread");
-    const int imb_idx       = schema->GetFieldIndex("imbalance");
-    const int age_idx       = schema->GetFieldIndex("age_diff_ms");
-    const int last_move_idx = schema->GetFieldIndex("last_move");
-    const int y_idx         = schema->GetFieldIndex("y");
-    const int tau_idx       = schema->GetFieldIndex("tau_ms");
-
-    if (ts_idx < 0 || day_idx < 0 || mid_idx < 0 || mid_next_idx < 0 ||
-        spread_idx < 0 || imb_idx < 0 || age_idx < 0 ||
-        last_move_idx < 0 || y_idx < 0 || tau_idx < 0) {
-      throw std::runtime_error(
-          "Expected LabeledEvent columns not found in schema");
-    }
-
-    // We only need these 10 columns; tell Arrow to project just these.
-    std::vector<int> col_indices = {
-        ts_idx, day_idx, mid_idx, mid_next_idx, spread_idx,
-        imb_idx, age_idx, last_move_idx, y_idx, tau_idx};
-
-    // Modern GetRecordBatchReader API: returns Result<unique_ptr<RecordBatchReader>>.
-    auto maybe_reader = reader->GetRecordBatchReader(col_indices);
-    if (!maybe_reader.ok()) {
-      throw std::runtime_error(
-          "Failed to create RecordBatchReader for " + events_path + ": " +
-          maybe_reader.status().ToString());
-    }
-    std::unique_ptr<arrow::RecordBatchReader> batch_reader =
-        std::move(maybe_reader).ValueOrDie();
-
+                            const std::string& events_path) {
     pnl_.StartYear(year);
 
+    // RAII stream that owns the Arrow reader + record-batch reader.
+    LabeledEventStream stream(events_path);
+
     LabeledEvent prev_ev{};
+    LabeledEvent ev{};
     bool has_prev = false;
 
-    // Stream over record batches to avoid loading entire table into memory.
-    while (true) {
-      std::shared_ptr<arrow::RecordBatch> batch;
-      auto st = batch_reader->ReadNext(&batch);
-      if (!st.ok()) {
-        throw std::runtime_error("Error reading batch from " + events_path +
-                                ": " + st.ToString());
-      }
-      if (!batch) {
-        break;  // no more batches
+    while (stream.next(ev)) {
+      // For each pair (prev_ev, ev) on the same day, treat ev as "next_event".
+      if (has_prev) {
+        const LabeledEvent* next_ptr =
+            (ev.day == prev_ev.day) ? &ev : nullptr;
+        ProcessEvent(prev_ev, next_ptr);
       }
 
-      const int64_t n = batch->num_rows();
-      if (n == 0) continue;
-
-      // Columns come in the same order as col_indices above.
-      auto ts_arr =
-          std::static_pointer_cast<arrow::UInt64Array>(batch->column(0));
-      auto day_arr =
-          std::static_pointer_cast<arrow::UInt32Array>(batch->column(1));
-      auto mid_arr =
-          std::static_pointer_cast<arrow::DoubleArray>(batch->column(2));
-      auto mid_next_arr =
-          std::static_pointer_cast<arrow::DoubleArray>(batch->column(3));
-      auto spread_arr =
-          std::static_pointer_cast<arrow::DoubleArray>(batch->column(4));
-      auto imb_arr =
-          std::static_pointer_cast<arrow::DoubleArray>(batch->column(5));
-      auto age_arr =
-          std::static_pointer_cast<arrow::DoubleArray>(batch->column(6));
-      auto last_move_arr =
-          std::static_pointer_cast<arrow::DoubleArray>(batch->column(7));
-      auto y_arr =
-          std::static_pointer_cast<arrow::DoubleArray>(batch->column(8));
-      auto tau_arr =
-          std::static_pointer_cast<arrow::DoubleArray>(batch->column(9));
-
-      for (int64_t i = 0; i < n; ++i) {
-        // Build a LabeledEvent from the Arrow row.
-        LabeledEvent ev{};
-        ev.ts          = ts_arr->Value(i);
-        ev.day         = day_arr->Value(i);
-        ev.mid         = mid_arr->Value(i);
-        ev.mid_next    = mid_next_arr->Value(i);
-        ev.spread      = spread_arr->Value(i);
-        ev.imbalance   = imb_arr->Value(i);
-        ev.age_diff_ms = age_arr->Value(i);
-        ev.last_move   = last_move_arr->Value(i);
-        ev.y           = y_arr->Value(i);
-        ev.tau_ms      = tau_arr->Value(i);
-
-        // For each pair (prev_ev, ev) on the same day, treat ev as "next_event".
-        if (has_prev) {
-          const LabeledEvent* next_ptr =
-              (ev.day == prev_ev.day) ? &ev : nullptr;
-          ProcessEvent(prev_ev, next_ptr);
-        }
-
-        prev_ev = ev;
-        has_prev = true;
-      }
+      prev_ev = ev;
+      has_prev = true;
     }
 
     // Last event of the year doesn't open a new trade (no "next" event).
     pnl_.FinalizeYear();
   }
-  
+
   void Backtester::ProcessEvent(const LabeledEvent& ev,
                                 const LabeledEvent* next_event) {
     // If there's no next event on the same day, we don't open a trade.
