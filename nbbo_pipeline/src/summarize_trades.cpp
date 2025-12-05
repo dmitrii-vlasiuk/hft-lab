@@ -7,6 +7,9 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <chrono>
+
+#include "nbbo/timing.hpp"
 
 // Simple helper to expand years from CLI arguments.
 //
@@ -111,6 +114,10 @@ struct YearStats {
 // Expects file at: <trades_dir>/SPY_<year>_trades.csv
 // Skips malformed lines; exits if file can't be opened.
 static YearStats summarize_year(const std::string& trades_dir, int year) {
+  {
+    NBBO_SCOPE_TIMER("summarize_trades::summarize_year_" + std::to_string(year));
+  }
+
   YearStats stats;
   std::ostringstream fname;
   fname << "SPY_" << year << "_trades.csv";
@@ -168,6 +175,9 @@ static YearStats summarize_year(const std::string& trades_dir, int year) {
 }
 
 int main(int argc, char** argv) {
+  using Clock = std::chrono::steady_clock;
+  const auto program_start = Clock::now();
+
   // CLI:
   //   summarize_yearly_pnl <trades_dir> <years...>
   //
@@ -184,6 +194,8 @@ int main(int argc, char** argv) {
               << " data/research/trades 2018 2019 2020\n";
     return 1;
   }
+
+  NBBO_SCOPE_TIMER("summarize_trades_main");
 
   std::string trades_dir = argv[1];
   // Parse all remaining args into a sorted, deduped list of years
@@ -248,6 +260,20 @@ int main(int argc, char** argv) {
               << std::setprecision(8)  // reset precision for the next row
               << "\n";
   }
+
+  // Program wall-clock timing + append to shared timing log.
+  const auto program_end = Clock::now();
+  nbbo::TimingRegistry::Instance().Add("program_wall_clock",
+                                       program_end - program_start);
+
+  std::vector<std::string> args;
+  args.reserve(static_cast<std::size_t>(argc > 1 ? argc - 1 : 0));
+  for (int i = 1; i < argc; ++i) {
+    args.emplace_back(argv[i]);
+  }
+
+  const std::string timing_path = "data/research/profile/timing_log.txt";
+  nbbo::WriteTimingReport(timing_path, argv[0], args);
 
   return 0;
 }

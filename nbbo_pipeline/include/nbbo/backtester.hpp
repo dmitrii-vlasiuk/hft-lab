@@ -46,7 +46,7 @@ struct StrategyConfig {
   double max_mean_wait_ms = 0.0;
 
   // Edge-mode selector:
-  EdgeMode edge_mode = EdgeMode::CostWithGate; // default to Mode B
+  EdgeMode edge_mode = EdgeMode::Legacy; // default to Legacy
 };
 
 // Load StrategyConfig from a flat JSON file (no nested objects).

@@ -1,5 +1,3 @@
-
-
 #include "nbbo/event_table_builder.hpp"
 
 #include <cmath>
@@ -8,9 +6,11 @@
 #include <limits>
 #include <stdexcept>
 #include <vector>
+#include <chrono>
 
 #include "nbbo/arrow_utils.hpp"
 #include "nbbo/time_utils.hpp"
+#include "nbbo/timing.hpp"
 
 namespace fs = std::filesystem;
 
@@ -26,6 +26,11 @@ void EventTableBuilder::run() {
   //   5. Drop final day's unfinished event
   //   6. Close writer and print summary
 
+  using Clock = std::chrono::steady_clock;
+  const auto start = Clock::now();
+
+  NBBO_SCOPE_TIMER("EventTableBuilder::run");
+
   ensure_output_dir();
   open_input();
   init_reader();
@@ -33,9 +38,25 @@ void EventTableBuilder::run() {
   finish_day();
   writer_.close();
   print_summary();
+
+  // Wall-clock timing for the entire run.
+  const auto end = Clock::now();
+  nbbo::TimingRegistry::Instance().Add("EventTableBuilder::wall_clock",
+                                       end - start);
+
+  // Build args summary for the timing log.
+  std::vector<std::string> args;
+  args.emplace_back("in=" + cfg_.in_path);
+  args.emplace_back("out=" + cfg_.out_path);
+  args.emplace_back("threshold_next=" + std::to_string(cfg_.threshold_next));
+
+  const std::string timing_path = "data/research/profile/timing_log.txt";
+  nbbo::WriteTimingReport(timing_path, "EventTableBuilder::run", args);
 }
 
 void EventTableBuilder::ensure_output_dir() {
+  NBBO_SCOPE_TIMER("EventTableBuilder::ensure_output_dir");
+
   // Create parent directory of the output file
   try {
     fs::create_directories(fs::path(cfg_.out_path).parent_path());
@@ -44,6 +65,8 @@ void EventTableBuilder::ensure_output_dir() {
 }
 
 void EventTableBuilder::open_input() {
+  NBBO_SCOPE_TIMER("EventTableBuilder::open_input");
+
   // Fetch schema from parquet reader
   reader_ = nbbo::open_parquet_reader(cfg_.in_path, in_schema_);
   if (!in_schema_) {
@@ -52,6 +75,8 @@ void EventTableBuilder::open_input() {
 }
 
 void EventTableBuilder::init_reader() {
+  NBBO_SCOPE_TIMER("EventTableBuilder::init_reader");
+
   // Build a RecordBatchReader over all rows + columns via batch streaming
   std::vector<int> all_row_groups;
   {
@@ -80,6 +105,8 @@ void EventTableBuilder::init_reader() {
 }
 
 void EventTableBuilder::process_stream() {
+  NBBO_SCOPE_TIMER("EventTableBuilder::process_stream");
+
   // Main streaming loop to process in batches
   while (true) {
     std::shared_ptr<arrow::RecordBatch> batch;
@@ -99,6 +126,8 @@ void EventTableBuilder::process_stream() {
 
 void EventTableBuilder::process_batch(
     const std::shared_ptr<arrow::RecordBatch>& batch) {
+  NBBO_SCOPE_TIMER("EventTableBuilder::process_batch");
+
   // Processes a batch iteratively per row to generate features (events)
 
   // Field validation. If column is missing, throws runtime error
